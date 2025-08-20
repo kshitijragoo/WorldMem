@@ -30,6 +30,8 @@ from pathlib import Path
 from huggingface_hub import hf_hub_download
 from huggingface_hub import model_info
 import wandb
+import html
+import tempfile
 
 torch.set_float32_matmul_precision("high")
 
@@ -233,13 +235,36 @@ class BaseLightningExperiment(BaseExperiment):
             return
         script_path = getattr(self.root_cfg, "infer_script_path", "infer.sh")
         try:
+            # read script content if present
+            script_text = None
             if os.path.exists(script_path):
                 with open(script_path, "r") as f:
-                    content = f.read()
-                self.logger.experiment.log({"config/infer_sh_text": content})
-            # also log full resolved config
+                    script_text = f.read()
+
+            # resolved config yaml
             cfg_yaml = OmegaConf.to_yaml(self.root_cfg)
-            self.logger.experiment.log({"config/resolved_config_yaml": cfg_yaml})
+
+            # log as HTML media so they show in Media panel
+            if script_text is not None:
+                self.logger.experiment.log({
+                    "media/infer_sh_html": wandb.Html(f"<pre>{html.escape(script_text)}</pre>")
+                })
+            self.logger.experiment.log({
+                "media/resolved_config_yaml_html": wandb.Html(f"<pre>{html.escape(cfg_yaml)}</pre>")
+            })
+
+            # also attach as an artifact for download
+            art = wandb.Artifact(f"run-config-{wandb.run.id if wandb.run else 'local'}", type="config")
+            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False) as fy:
+                fy.write(cfg_yaml)
+                cfg_path = fy.name
+            art.add_file(cfg_path, name="resolved_config.yaml")
+            if script_text is not None:
+                with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as fs:
+                    fs.write(script_text)
+                    sh_path = fs.name
+                art.add_file(sh_path, name=os.path.basename(script_path))
+            self.logger.experiment.log_artifact(art)
         except Exception:
             pass
         self._infer_script_logged = True
