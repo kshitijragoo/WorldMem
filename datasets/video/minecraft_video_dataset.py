@@ -69,6 +69,9 @@ class MinecraftVideoDataset(BaseVideoDataset):
         if split == "test":
             split = "validation"
         self.wo_updown = getattr(cfg, "wo_updown", False)
+        # selection controls for validation set
+        self.selection_mode = getattr(cfg, "selection_mode", "random")
+        self.selected_videos = getattr(cfg, "selected_videos", [])
         super().__init__(cfg, split)
         self.n_frames = cfg.n_frames_valid if split == "validation" and hasattr(cfg, "n_frames_valid") else cfg.n_frames
         self.memory_condition_length = cfg.memory_condition_length
@@ -81,6 +84,14 @@ class MinecraftVideoDataset(BaseVideoDataset):
         self.memory_condition_length = getattr(cfg, "memory_condition_length", False)
         self.sample_more_event = getattr(cfg, "sample_more_event", False)
         self.causal_frame = getattr(cfg, "causal_frame", False)
+        # preserve or shuffle order after base init
+        if self.split == "validation" and self.selection_mode == "list" and len(self.selected_videos) > 0:
+            self.idx_remap = list(range(self.__len__()))
+        elif self.split == "validation" and self.selection_mode == "random":
+            # reshuffle validation order randomly each run
+            import time
+            random.seed(int(time.time()))
+            random.shuffle(self.idx_remap)
 
     def get_data_paths(self, split: str):
         """
@@ -95,20 +106,31 @@ class MinecraftVideoDataset(BaseVideoDataset):
         data_dir = self.save_dir / split
         paths = sorted(list(data_dir.glob("**/*.mp4")), key=lambda x: x.name)
 
-        if self.wo_updown:
-            # Filter out paths containing "w_updown"
-            paths = [p for p in paths if "w_updown" not in str(p)]
-        
-        if split == "validation" and self.wo_updown:
-            paths = [p for p in paths if "w_updown" not in str(p)]
-        elif split == "validation":
-            paths = [p for p in paths if "w_updown" in str(p)]
+        if getattr(self, "selection_mode", "random") != "list":
+            if self.wo_updown:
+                # Filter out paths containing "w_updown"
+                paths = [p for p in paths if "w_updown" not in str(p)]
+            elif split == "validation":
+                # default behavior keeps only w_updown for validation unless explicit list is provided
+                paths = [p for p in paths if "w_updown" in str(p)]
 
         if not paths:
             sub_dirs = os.listdir(data_dir)
             for sub_dir in sub_dirs:
                 sub_path = data_dir / sub_dir
                 paths += sorted(list(sub_path.glob("**/*.mp4")), key=lambda x: x.name)
+        # Apply explicit selection if requested (mainly for validation)
+        if split == "validation" and getattr(self, "selection_mode", "random") == "list":
+            selected = getattr(self, "selected_videos", [])
+            if isinstance(selected, (list, tuple)) and len(selected) > 0:
+                # build name -> Path mapping
+                name_to_path = {}
+                for p in paths:
+                    name_to_path[f"{p.parent.name}_{p.stem}"] = p
+                # keep only those present, preserve order as given by user
+                filtered = [name_to_path[s] for s in selected if s in name_to_path]
+                if len(filtered) > 0:
+                    paths = filtered
         return paths
 
     def download_dataset(self):
@@ -241,10 +263,22 @@ class MinecraftVideoDataset(BaseVideoDataset):
         # === 7. Convert video to torch format ===
         video = torch.from_numpy(video / 255.0).float().permute(0, 3, 1, 2).contiguous()
 
+        # === 8. Build sample identifier ===
+        sample_name = f"{video_path.parent.name}_{video_path.stem}"
+
         # === 9. Return all items ===
-        return (
-            video[:: self.frame_skip],
-            actions[:: self.frame_skip],
-            poses[:: self.frame_skip],
-            timestamp
-        )
+        if self.split == "validation":
+            return (
+                video[:: self.frame_skip],
+                actions[:: self.frame_skip],
+                poses[:: self.frame_skip],
+                timestamp,
+                sample_name,
+            )
+        else:
+            return (
+                video[:: self.frame_skip],
+                actions[:: self.frame_skip],
+                poses[:: self.frame_skip],
+                timestamp,
+            )

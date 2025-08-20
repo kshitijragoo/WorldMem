@@ -21,6 +21,7 @@ from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from pytorch_lightning.utilities import rank_zero_info
 
 from omegaconf import DictConfig
+from omegaconf import OmegaConf
 
 from utils.print_utils import cyan
 from utils.distributed_utils import is_rank_zero
@@ -28,6 +29,7 @@ from safetensors.torch import load_model
 from pathlib import Path
 from huggingface_hub import hf_hub_download
 from huggingface_hub import model_info
+import wandb
 
 torch.set_float32_matmul_precision("high")
 
@@ -224,6 +226,24 @@ class BaseLightningExperiment(BaseExperiment):
         if self.logger:
             callbacks.append(LearningRateMonitor("step", True))
 
+    def _log_infer_script(self):
+        if not self.logger:
+            return
+        if getattr(self, "_infer_script_logged", False):
+            return
+        script_path = getattr(self.root_cfg, "infer_script_path", "infer.sh")
+        try:
+            if os.path.exists(script_path):
+                with open(script_path, "r") as f:
+                    content = f.read()
+                self.logger.experiment.log({"config/infer_sh_text": content})
+            # also log full resolved config
+            cfg_yaml = OmegaConf.to_yaml(self.root_cfg)
+            self.logger.experiment.log({"config/resolved_config_yaml": cfg_yaml})
+        except Exception:
+            pass
+        self._infer_script_logged = True
+
     def _build_training_loader(self) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
         train_dataset = self._build_dataset("training")
         shuffle = (
@@ -335,6 +355,7 @@ class BaseLightningExperiment(BaseExperiment):
                     if 'r_' in name or 'pose_embedder' in name or 'pose_cond_mlp' in name or 'lora_' in name:
                         para.requires_grad_(True)
                     
+            self._log_infer_script()
             trainer.fit(
                 self.algo,
                 train_dataloaders=self._build_training_loader(),
@@ -349,6 +370,7 @@ class BaseLightningExperiment(BaseExperiment):
                     if 'r_' in name or 'pose_embedder' in name or 'pose_cond_mlp' in name or 'lora_' in name:
                         para.requires_grad_(True)
             
+            self._log_infer_script()
             trainer.fit(
                 self.algo,
                 train_dataloaders=self._build_training_loader(),
@@ -395,12 +417,14 @@ class BaseLightningExperiment(BaseExperiment):
                         para[5*1024:6*1024] = 0
                         para.requires_grad_(True)
             
+            self._log_infer_script()
             trainer.validate(
                 self.algo,
                 dataloaders=self._build_validation_loader(),
                 ckpt_path=None,
             )
         else:
+            self._log_infer_script()
             trainer.validate(
                 self.algo,
                 dataloaders=self._build_validation_loader(),
@@ -432,6 +456,7 @@ class BaseLightningExperiment(BaseExperiment):
 
         # Only load the checkpoint if only testing. Otherwise, it will have been loaded
         # and further trained during train.
+        self._log_infer_script()
         trainer.test(
             self.algo,
             dataloaders=self._build_test_loader(),

@@ -12,6 +12,8 @@ python -m main +name=infer \
     +dataset.memory_condition_length=8 \
     +dataset.customized_validation=true \
     +dataset.add_timestamp_embedding=true \
+    +dataset.selection_mode=random \
+    +dataset.selected_videos=["w_updown_000008"] \
     +algorithm.n_tokens=8 \
     +algorithm.memory_condition_length=8 \
     algorithm.context_frames=600 \
@@ -19,3 +21,6 @@ python -m main +name=infer \
     +algorithm.log_video=true \
     +algorithm.add_timestamp_embedding=true \
     algorithm.metrics=[lpips,psnr] \
+    +infer_script_path=infer.sh \
+
+# +dataset.selection_mode=random or +dataset.selection_mode=list \ +dataset.selected_videos=[w_updown_000008]

@@ -479,7 +479,15 @@ class WorldMemMinecraft(DiffusionForcingBase):
         
         xs_pred = []
         xs = []
-        for pred, gt in self.validation_step_outputs:
+        names_all = []
+        for item in self.validation_step_outputs:
+            if len(item) == 3:
+                pred, gt, names = item
+                if names is not None:
+                    # flatten list of names for this batch
+                    names_all.extend(list(names))
+            else:
+                pred, gt = item
             xs_pred.append(pred)
             xs.append(gt)
 
@@ -495,6 +503,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 xs,
                 step=None if namespace == "test" else self.global_step,
                 namespace=namespace + "_vis",
+                names=names_all if len(names_all) == xs_pred.shape[1] else None,
                 context_frames=self.context_frames,
                 logger=self.logger.experiment,
             )
@@ -540,8 +549,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
         self.validation_step_outputs.clear()
 
     def _preprocess_batch(self, batch):
-
-        xs, conditions, pose_conditions, frame_index = batch
+        if len(batch) == 5:
+            xs, conditions, pose_conditions, frame_index, sample_names = batch
+            self._current_sample_names = sample_names
+        else:
+            xs, conditions, pose_conditions, frame_index = batch
+            self._current_sample_names = None
 
         if self.action_cond_dim:
             conditions = torch.cat([torch.zeros_like(conditions[:, :1]), conditions[:, 1:]], 1)
@@ -705,6 +718,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         # Preprocess the input batch
         memory_condition_length = self.memory_condition_length
         xs_raw, conditions, pose_conditions, c2w_mat, frame_idx = self._preprocess_batch(batch)
+        names = getattr(self, "_current_sample_names", None)
 
 
         # Encode frames in chunks if necessary
@@ -787,7 +801,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         xs_decode = self.decode(xs[n_context_frames:].to(conditions.device))
 
         # Store results for evaluation
-        self.validation_step_outputs.append((xs_pred, xs_decode))
+        self.validation_step_outputs.append((xs_pred, xs_decode, names))
         return
 
     @torch.no_grad()

@@ -31,6 +31,7 @@ def log_video(
     step=0,
     namespace="train",
     prefix="video",
+    names=None,
     context_frames=0,
     color=(255, 0, 0),
     logger=None,
@@ -71,9 +72,10 @@ def log_video(
     n_samples = len(video)
     # use wandb directly here since pytorch lightning doesn't support logging videos yet
     for i in range(n_samples):
+        key_name = f"{namespace}/{names[i]}" if names is not None and i < len(names) else f"{namespace}/{prefix}_{i}"
         logger.log(
             {
-                f"{namespace}/{prefix}_{i}": wandb.Video(video[i], fps=5),
+                key_name: wandb.Video(video[i], fps=5),
                 f"trainer/global_step": step,
             }
         )
