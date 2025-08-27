@@ -498,15 +498,27 @@ class WorldMemMinecraft(DiffusionForcingBase):
             xs = None
 
         if self.logger and self.log_video:
+            # log generated videos separately
             log_video(
                 xs_pred,
-                xs,
+                None,
                 step=None if namespace == "test" else self.global_step,
-                namespace=namespace + "_vis",
+                namespace=namespace + "_vis_generated",
                 names=names_all if len(names_all) == xs_pred.shape[1] else None,
                 context_frames=self.context_frames,
                 logger=self.logger.experiment,
             )
+            # log ground-truth videos separately (if available)
+            if xs is not None:
+                log_video(
+                    xs,
+                    None,
+                    step=None if namespace == "test" else self.global_step,
+                    namespace=namespace + "_vis_ground_truth",
+                    names=names_all if len(names_all) == xs_pred.shape[1] else None,
+                    context_frames=self.context_frames,
+                    logger=self.logger.experiment,
+                )
 
         if xs is not None:
             metric_dict = get_validation_metrics_for_videos(
