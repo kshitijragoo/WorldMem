@@ -372,6 +372,10 @@ def on_image_click(selected_image):
     input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = reset(selected_image)
     return input_history, selected_image, selected_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
 
+def on_image_upload(uploaded_image):
+    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = reset(uploaded_image)
+    return input_history, uploaded_image, uploaded_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
+
 def set_memory(examples_case):
     if examples_case == '1':
         data_bundle = np.load("assets/examples/case1.npz")
@@ -486,6 +490,7 @@ with gr.Blocks(css=css) as demo:
         with gr.Column():
             gr.Markdown("🖼️ Start from this frame.")
             image_display = gr.Image(value=selected_image.value, interactive=False, label="Current Frame")
+            upload_image = gr.Image(label="Upload start frame", sources=['upload'], type='pil')
         with gr.Column():
             gr.Markdown("🎞️ Generated videos. New contents are marked in red box.")
             video_display = gr.Video(autoplay=True, loop=True)
@@ -611,6 +616,8 @@ with gr.Blocks(css=css) as demo:
     image_display_4.select(lambda: on_image_click(ICE_PLAINS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
     image_display_5.select(lambda: on_image_click(SUNFLOWERS_RAIN_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
     image_display_6.select(lambda: on_image_click(PLACE_IMAGE), outputs=[log_output, selected_image,image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
+
+    upload_image.change(fn=on_image_upload, inputs=[upload_image], outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
 
     slider_denoising_step.change(fn=set_denoising_steps, inputs=[slider_denoising_step, sampling_timesteps_state], outputs=sampling_timesteps_state)
     slider_context_length.change(fn=set_context_length, inputs=[slider_context_length, sampling_context_length_state], outputs=sampling_context_length_state)
