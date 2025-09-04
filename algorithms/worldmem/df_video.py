@@ -602,7 +602,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         x = rearrange(x, "(t b) c h w-> t b c h w", t=total_frames)
         return x
 
-    def _generate_condition_indices(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
+    def _generate_condition_indices2(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
         """
         Generate indices for condition similarity based on the current frame and pose conditions.
         """
@@ -662,6 +662,76 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 # in_fov_list = in_fov_list & ~mask_sim[:,None].to(in_fov_list.device)
 
             random_idx = torch.stack(random_idx).cpu()
+
+        return random_idx
+
+    def _generate_condition_indices(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
+        """
+        MODIFIED: Generate indices for memory frames based on pose similarity (K-Nearest Neighbors).
+        This version replaces the original FOV overlap calculation with a faster distance-based search.
+        It selects the K memory frames with the smallest pose distance to the current frame.
+        """
+        # Handles the initial frames when the memory bank is not yet full.
+        if curr_frame < memory_condition_length:
+            # Pad with the first frame if not enough unique frames are available.
+            random_idx = [i for i in range(curr_frame)] + [0] * (memory_condition_length - curr_frame)
+            # Repeat indices for each item in the batch.
+            random_idx = np.repeat(np.array(random_idx)[:, None], xs_pred.shape[1], -1)
+            # Convert to a PyTorch tensor on the CPU, which is the expected output format.
+            random_idx = torch.from_numpy(random_idx)
+        else:
+            # --- KNN-based Retrieval Logic ---
+            
+            # Get the current pose and all past poses from the memory bank.
+            # `pose_conditions` has shape [total_frames, batch_size, 5]
+            current_pose = pose_conditions[curr_frame]      # Shape: [batch_size, 5]
+            memory_poses = pose_conditions[:curr_frame]      # Shape: [curr_frame, batch_size, 5]
+
+            # --- 1. Calculate Positional Distance (Euclidean) ---
+            # Unsqueeze adds a dimension for broadcasting against the memory poses.
+            current_pos = current_pose[:, :3].unsqueeze(0)   # Shape: [1, batch_size, 3]
+            memory_pos = memory_poses[:, :, :3]            # Shape: [curr_frame, batch_size, 3]
+            
+            # `torch.linalg.norm` computes the Euclidean distance along the last dimension.
+            position_distance = torch.linalg.norm(current_pos - memory_pos, dim=-1) # Shape: [curr_frame, batch_size]
+
+            # --- 2. Calculate Orientation Distance (Angular) ---
+            # This weight is a tunable hyperparameter to balance position vs. orientation.
+            orientation_weight = 0.5
+            current_orient = current_pose[:, 3:].unsqueeze(0) # Shape: [1, batch_size, 2]
+            memory_orient = memory_poses[:, :, 3:]          # Shape: [curr_frame, batch_size, 2]
+
+            # Calculate the shortest angle difference, handling the 360-degree wraparound.
+            orient_diff = torch.abs(current_orient - memory_orient)
+            orient_diff = torch.min(orient_diff, 360.0 - orient_diff)
+            orientation_distance = torch.linalg.norm(orient_diff, dim=-1) # Shape: [curr_frame, batch_size]
+            
+            # --- 3. Combine Distances into a Single Score ---
+            # A lower score indicates a closer pose.
+            pose_score = position_distance + orientation_weight * orientation_distance
+
+            # --- 4. Apply Time Penalty (from original paper) ---
+            # This discourages retrieving very old frames unless they are an exceptionally good match.
+            time_penalty_weight = 0.2
+            # `frame_idx` has shape [total_frames, batch_size]
+            time_difference = frame_idx[curr_frame].unsqueeze(0) - frame_idx[:curr_frame]
+            # Add a small epsilon to avoid division by zero if curr_frame is 0.
+            time_penalty = (time_difference.float() / (curr_frame + 1e-6)) * time_penalty_weight
+
+            # --- 5. Calculate Final Score ---
+            # Combine pose distance and time penalty. A lower score is better.
+            final_score = pose_score + time_penalty
+
+            # --- 6. Select the Top K Indices ---
+            # We find the `k` smallest scores for each item in the batch along the frame dimension (dim=0).
+            _, top_indices = torch.topk(
+                final_score, 
+                k=memory_condition_length, 
+                dim=0, 
+                largest=False
+            ) # Shape: [memory_condition_length, batch_size]
+
+            random_idx = top_indices.cpu()
 
         return random_idx
 
