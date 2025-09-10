@@ -353,6 +353,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         self.self_consistency_eval = getattr(cfg, "self_consistency_eval", False)
         self.next_frame_length = getattr(cfg, "next_frame_length", 1)
         self.require_pose_prediction = getattr(cfg, "require_pose_prediction", False)
+        self.condition_index_method = getattr(cfg, "condition_index_method", "fov")
 
         super().__init__(cfg)
             
@@ -602,7 +603,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         x = rearrange(x, "(t b) c h w-> t b c h w", t=total_frames)
         return x
 
-    def _generate_condition_indices2(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
+    def _generate_condition_indices_mc_fov(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
         """
         Generate indices for condition similarity based on the current frame and pose conditions.
         """
@@ -665,7 +666,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         return random_idx
 
-    def _generate_condition_indices(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
+    def _generate_condition_indices_knn(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon):
         """
         MODIFIED: Generate indices for memory frames based on pose similarity (K-Nearest Neighbors).
         This version replaces the original FOV overlap calculation with a faster distance-based search.
@@ -841,9 +842,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
             # Handle condition similarity logic
             if memory_condition_length:
-                random_idx = self._generate_condition_indices(
-                    curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
-                )
+                if self.condition_index_method.lower() == "knn":
+                    random_idx = self._generate_condition_indices_knn(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                else:
+                    random_idx = self._generate_condition_indices_mc_fov(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
 
                 xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
 
@@ -978,9 +984,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
             # Handle condition similarity logic
             if memory_condition_length:
-                random_idx = self._generate_condition_indices(
-                    curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, next_horizon
-                )
+                if self.condition_index_method.lower() == "knn":
+                    random_idx = self._generate_condition_indices_knn(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, next_horizon
+                    )
+                else:
+                    random_idx = self._generate_condition_indices_mc_fov(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, next_horizon
+                    )
                 
                 # random_idx = np.unique(random_idx)[:, None]
                 # memory_condition_length = len(random_idx)
