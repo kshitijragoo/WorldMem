@@ -20,6 +20,8 @@ from .df_base import DiffusionForcingBase
 from .models.vae import VAE_models
 from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
+from .dinov3_feature_extractor import DINOv3FeatureExtractor
+
 import glob
 
 # Utility Functions
@@ -353,7 +355,20 @@ class WorldMemMinecraft(DiffusionForcingBase):
         self.self_consistency_eval = getattr(cfg, "self_consistency_eval", False)
         self.next_frame_length = getattr(cfg, "next_frame_length", 1)
         self.require_pose_prediction = getattr(cfg, "require_pose_prediction", False)
+        # New parameter to select retrieval method
         self.condition_index_method = getattr(cfg, "condition_index_method", "fov")
+
+        super().__init__(cfg)
+        
+        # Initialize DINOv3 feature extractor if the method is selected
+        if self.condition_index_method.lower() == "dinov3":
+            print("Initializing DINOv3-based hybrid retrieval.")
+            self.dino_feature_extractor = DINOv3FeatureExtractor(model_name='dinov3_vitl16', device=self.device)
+            self.memory_candidate_pool_size = 64  # Hyperparameter N
+            self.w_geom = 0.4  # Hyperparameter for geometric score weight
+            self.w_sem = 0.6   # Hyperparameter for semantic score weight
+            self.similarity_threshold = 0.95 # For redundancy filtering
+
 
         super().__init__(cfg)
             
@@ -736,6 +751,45 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         return random_idx
 
+    def _generate_condition_indices_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw):
+        """
+        Generate memory indices using a hybrid geometric and semantic retrieval strategy.
+        """
+        batch_size = xs_pred.shape[1]
+        if curr_frame < self.memory_candidate_pool_size:
+            # Fallback to original FOV method if memory bank is not large enough
+            return self._generate_condition_indices_mc_fov(curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, 1)
+
+        # --- 1. Geometric Filtering (Pose-based k-NN) ---
+        current_pose = pose_conditions[curr_frame]
+        memory_poses = pose_conditions[:curr_frame]
+        dists = torch.cdist(current_pose.unsqueeze(0), memory_poses.permute(1, 0, 2)).squeeze(0)
+        geometric_scores, candidate_indices = torch.topk(dists, k=self.memory_candidate_pool_size, dim=0, largest=False)
+        geometric_scores = F.softmax(-geometric_scores, dim=0)  # Invert distance to score
+
+        # --- 2. Semantic Re-ranking (DINOv3) ---
+        current_frame_img = xs_raw[curr_frame]
+        candidate_frames_img = xs_raw[candidate_indices.squeeze(-1)]
+
+        # Extract features
+        with torch.no_grad():
+            current_features = self.dino_feature_extractor.extract_patch_features(current_frame_img).mean(dim=1)
+            candidate_features = self.dino_feature_extractor.extract_patch_features(candidate_frames_img).mean(dim=1)
+        
+        # Calculate semantic scores
+        semantic_scores = F.cosine_similarity(current_features.unsqueeze(0), candidate_features, dim=-1)
+        semantic_scores = F.softmax(semantic_scores, dim=0)
+
+        # --- 3. Hybrid Scoring ---
+        combined_scores = self.w_geom * geometric_scores + self.w_sem * semantic_scores
+
+        # --- 4. Final Selection (Greedy Top-K) ---
+        _, top_k_indices_in_candidates = torch.topk(combined_scores, k=memory_condition_length, dim=0)
+        final_selected_indices = torch.gather(candidate_indices, 0, top_k_indices_in_candidates)
+
+        return final_selected_indices.cpu()
+
+
     def _prepare_conditions(self, 
                             start_frame, curr_frame, horizon, conditions, 
                             pose_conditions, c2w_mat, frame_idx, random_idx,
@@ -846,7 +900,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
-                else:
+                elif self.condition_index_method.lower() == "dinov3":
+                    random_idx = self._generate_condition_indices_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                else :
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
@@ -986,11 +1044,15 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if memory_condition_length:
                 if self.condition_index_method.lower() == "knn":
                     random_idx = self._generate_condition_indices_knn(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, next_horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
-                else:
+                elif self.condition_index_method.lower() == "dinov3":
+                    random_idx = self._generate_condition_indices_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                else :
                     random_idx = self._generate_condition_indices_mc_fov(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, next_horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                 
                 # random_idx = np.unique(random_idx)[:, None]
