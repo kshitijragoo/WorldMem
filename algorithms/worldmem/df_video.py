@@ -1003,7 +1003,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
     @torch.no_grad()
     def interactive(self, first_frame, new_actions, first_pose, device,
-                    memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx):
+                    memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
     
         memory_condition_length = self.memory_condition_length
 

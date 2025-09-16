@@ -242,13 +242,13 @@ poses = np.zeros((1, 5), dtype=np.float32)
 
 
 def get_duration_single_image_to_long_video(first_frame, action, first_pose, device, memory_latent_frames, memory_actions, 
-                            memory_poses, memory_c2w, memory_frame_idx):
+                            memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
     return 5 * len(action) if memory_actions is not None else 5
 
 @spaces.GPU(duration=get_duration_single_image_to_long_video)
 def run_interactive(first_frame, action, first_pose, device, memory_latent_frames, memory_actions, 
-                            memory_poses, memory_c2w, memory_frame_idx):
-    new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = worldmem.interactive(first_frame,
+                            memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
+    new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = worldmem.interactive(first_frame,
                                     action,
                                     first_pose, 
                                     device=device,
@@ -256,9 +256,10 @@ def run_interactive(first_frame, action, first_pose, device, memory_latent_frame
                                     memory_actions=memory_actions,
                                     memory_poses=memory_poses,
                                     memory_c2w=memory_c2w,
-                                    memory_frame_idx=memory_frame_idx)
+                                    memory_frame_idx=memory_frame_idx,
+                                    memory_raw_frames=memory_raw_frames)
 
-    return new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
+    return new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
 def set_denoising_steps(denoising_steps, sampling_timesteps_state):
     worldmem.sampling_timesteps = denoising_steps
@@ -285,11 +286,11 @@ def set_next_frame_length(next_frame_length, sampling_next_frame_length_state):
     print("set next frame length to", worldmem.next_frame_length)
     return sampling_next_frame_length_state
 
-def generate(keys, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx):
+def generate(keys, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
     input_actions = parse_input_to_tensor(keys)
 
     if memory_latent_frames is None:
-        new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = run_interactive(video_frames[0],
+        new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = run_interactive(video_frames[0],
                                     actions[0],
                                     poses[0],
                                     device=device,
@@ -297,9 +298,10 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
                                     memory_actions=memory_actions,
                                     memory_poses=memory_poses,
                                     memory_c2w=memory_c2w,
-                                    memory_frame_idx=memory_frame_idx)
+                                    memory_frame_idx=memory_frame_idx,
+                                    memory_raw_frames=memory_raw_frames)
 
-    new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = run_interactive(video_frames[0],
+    new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = run_interactive(video_frames[0],
                                     input_actions,
                                     None,
                                     device=device,
@@ -307,7 +309,8 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
                                     memory_actions=memory_actions,
                                     memory_poses=memory_poses,
                                     memory_c2w=memory_c2w,
-                                    memory_frame_idx=memory_frame_idx)
+                                    memory_frame_idx=memory_frame_idx,
+                                    memory_raw_frames=memory_raw_frames)
 
     video_frames = np.concatenate([video_frames, new_frame[:,0]])
 
@@ -344,7 +347,7 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
 
     # np.savez(os.path.join(folder_path, "data_bundle.npz"), **data_dict)
 
-    return last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
+    return last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
 def reset(selected_image):
     memory_latent_frames = None
@@ -352,10 +355,11 @@ def reset(selected_image):
     memory_actions = None
     memory_c2w = None
     memory_frame_idx = None
+    memory_raw_frames = None
     video_frames = load_image_as_tensor(selected_image).numpy()[None]
     input_history = ""
 
-    new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = run_interactive(video_frames[0],
+    new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = run_interactive(video_frames[0],
                                 actions[0],
                                 poses[0],
                                 device=device,
@@ -364,13 +368,14 @@ def reset(selected_image):
                                 memory_poses=memory_poses,
                                 memory_c2w=memory_c2w,
                                 memory_frame_idx=memory_frame_idx,
+                                memory_raw_frames=memory_raw_frames,
                                 )
 
-    return input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
+    return input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
 def on_image_click(selected_image):
-    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx = reset(selected_image)
-    return input_history, selected_image, selected_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
+    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = reset(selected_image)
+    return input_history, selected_image, selected_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
 def set_memory(examples_case):
     if examples_case == '1':
@@ -571,6 +576,7 @@ with gr.Blocks(css=css) as demo:
     memory_poses = gr.State()
     memory_c2w = gr.State()
     memory_frame_idx = gr.State()
+    memory_raw_frames = gr.State()
 
     def set_action(action):
         return action
@@ -594,23 +600,23 @@ with gr.Blocks(css=css) as demo:
     example_case.change(
         fn=set_memory,
         inputs=[example_case],
-        outputs=[log_output, image_display, video_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx]
+        outputs=[log_output, image_display, video_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames]
     )
 
     submit_button.click(generate, inputs=[input_box, log_output, video_frames, 
                                           memory_latent_frames, memory_actions, memory_poses, 
-                                          memory_c2w, memory_frame_idx], 
+                                          memory_c2w, memory_frame_idx, memory_raw_frames], 
                                           outputs=[image_display, video_display, log_output, 
                                                     video_frames, memory_latent_frames, memory_actions, memory_poses, 
-                                                    memory_c2w, memory_frame_idx])
+                                                    memory_c2w, memory_frame_idx, memory_raw_frames])
 
-    reset_btn.click(reset, inputs=[selected_image], outputs=[log_output, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
-    image_display_1.select(lambda: on_image_click(SUNFLOWERS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
-    image_display_2.select(lambda: on_image_click(DESERT_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
-    image_display_3.select(lambda: on_image_click(SAVANNA_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
-    image_display_4.select(lambda: on_image_click(ICE_PLAINS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
-    image_display_5.select(lambda: on_image_click(SUNFLOWERS_RAIN_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
-    image_display_6.select(lambda: on_image_click(PLACE_IMAGE), outputs=[log_output, selected_image,image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx])
+    reset_btn.click(reset, inputs=[selected_image], outputs=[log_output, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    image_display_1.select(lambda: on_image_click(SUNFLOWERS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    image_display_2.select(lambda: on_image_click(DESERT_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    image_display_3.select(lambda: on_image_click(SAVANNA_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    image_display_4.select(lambda: on_image_click(ICE_PLAINS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    image_display_5.select(lambda: on_image_click(SUNFLOWERS_RAIN_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    image_display_6.select(lambda: on_image_click(PLACE_IMAGE), outputs=[log_output, selected_image,image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
 
     slider_denoising_step.change(fn=set_denoising_steps, inputs=[slider_denoising_step, sampling_timesteps_state], outputs=sampling_timesteps_state)
     slider_context_length.change(fn=set_context_length, inputs=[slider_context_length, sampling_context_length_state], outputs=sampling_context_length_state)
