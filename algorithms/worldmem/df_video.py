@@ -755,43 +755,87 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         return random_idx
 
-    def _generate_condition_indices_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw):
+    def _generate_condition_indices_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon):
         """
         Generate memory indices using a hybrid geometric and semantic retrieval strategy.
+        This version is robust to batching and handles the warm-up phase correctly.
         """
         batch_size = xs_pred.shape[1]
+
+        # --- Graceful Fallback for Initial Frames ---
+        # If the memory bank is too small for a full DINOv3 search, fall back to a simpler method.
         if curr_frame < self.memory_candidate_pool_size:
-            # Fallback to original FOV method if memory bank is not large enough
-            return self._generate_condition_indices_mc_fov(curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, 1)
+            # Using k-NN is a fast and reasonable fallback.
+            return self._generate_condition_indices_knn(
+                curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+            )
 
-        # --- 1. Geometric Filtering (Pose-based k-NN) ---
-        current_pose = pose_conditions[curr_frame]
-        memory_poses = pose_conditions[:curr_frame]
-        dists = torch.cdist(current_pose.unsqueeze(0), memory_poses.permute(1, 0, 2)).squeeze(0)
-        geometric_scores, candidate_indices = torch.topk(dists, k=self.memory_candidate_pool_size, dim=0, largest=False)
-        geometric_scores = F.softmax(-geometric_scores, dim=0)  # Invert distance to score
+        final_indices_list = []
+        # Process each item in the batch independently
+        for b in range(batch_size):
+            # --- 1. Geometric Filtering (Pose-based k-NN) ---
+            current_pose = pose_conditions[curr_frame, b]
+            memory_poses = pose_conditions[:curr_frame, b]
+            dists = torch.linalg.norm(current_pose - memory_poses, dim=-1)
+            
+            # Get the top N candidates based on geometric distance
+            geometric_scores, candidate_indices = torch.topk(dists, k=self.memory_candidate_pool_size, largest=False)
+            geometric_scores = F.softmax(-geometric_scores, dim=0)  # Invert distance to score
 
-        # --- 2. Semantic Re-ranking (DINOv3) ---
-        current_frame_img = xs_raw[curr_frame]
-        candidate_frames_img = xs_raw[candidate_indices.squeeze(-1)]
+            # --- 2. Semantic Re-ranking (DINOv3) ---
+            current_frame_img = xs_raw[curr_frame, b].unsqueeze(0)
+            candidate_frames_img = xs_raw[candidate_indices, b]
+            
+            # Create a single batch for efficient feature extraction
+            feature_extraction_batch = torch.cat([current_frame_img, candidate_frames_img], dim=0)
+            
+            with torch.no_grad():
+                all_features = self.dino_feature_extractor.extract_patch_features(feature_extraction_batch).mean(dim=1)
+            
+            current_features = all_features[0].unsqueeze(0)
+            candidate_features = all_features[1:]
 
-        # Extract features
-        with torch.no_grad():
-            current_features = self.dino_feature_extractor.extract_patch_features(current_frame_img).mean(dim=1)
-            candidate_features = self.dino_feature_extractor.extract_patch_features(candidate_frames_img).mean(dim=1)
-        
-        # Calculate semantic scores
-        semantic_scores = F.cosine_similarity(current_features.unsqueeze(0), candidate_features, dim=-1)
-        semantic_scores = F.softmax(semantic_scores, dim=0)
+            # Calculate semantic scores (cosine similarity)
+            semantic_scores = F.cosine_similarity(current_features, candidate_features, dim=-1)
+            semantic_scores = F.softmax(semantic_scores, dim=0)
+            
+            # --- 3. Hybrid Scoring ---
+            combined_scores = (self.w_geom * geometric_scores) + (self.w_sem * semantic_scores)
+            
+            # Re-rank the candidates based on the hybrid score
+            ranked_candidate_indices = candidate_indices[torch.argsort(combined_scores, descending=True)]
 
-        # --- 3. Hybrid Scoring ---
-        combined_scores = self.w_geom * geometric_scores + self.w_sem * semantic_scores
+            # --- 4. Final Selection with Redundancy Filtering ---
+            final_selected_indices_for_batch = []
+            available_indices = list(ranked_candidate_indices.cpu().numpy())
 
-        # --- 4. Final Selection (Greedy Top-K) ---
-        _, top_k_indices_in_candidates = torch.topk(combined_scores, k=memory_condition_length, dim=0)
-        final_selected_indices = torch.gather(candidate_indices, 0, top_k_indices_in_candidates)
+            while len(final_selected_indices_for_batch) < memory_condition_length and available_indices:
+                # Select the best available candidate
+                best_idx = available_indices.pop(0)
+                final_selected_indices_for_batch.append(best_idx)
 
-        return final_selected_indices.cpu()
+                # Filter out remaining candidates that are too similar to the one just selected
+                if available_indices: # Only filter if there are candidates left
+                    selected_features = xs_pred[best_idx, b].flatten()
+                    
+                    remaining_indices_to_keep = []
+                    for idx_to_check in available_indices:
+                        features_to_check = xs_pred[idx_to_check, b].flatten()
+                        # Using VAE latent similarity for filtering is fast
+                        similarity = F.cosine_similarity(selected_features.unsqueeze(0), features_to_check.unsqueeze(0))
+                        
+                        if similarity < self.similarity_threshold:
+                            remaining_indices_to_keep.append(idx_to_check)
+                    available_indices = remaining_indices_to_keep
+
+            # Pad if not enough unique frames were found
+            while len(final_selected_indices_for_batch) < memory_condition_length:
+                final_selected_indices_for_batch.append(final_selected_indices_for_batch[0]) # Pad with the best one
+            
+            final_indices_list.append(torch.tensor(final_selected_indices_for_batch, device='cpu'))
+
+        return torch.stack(final_indices_list, dim=1)
+
 
 
     def _prepare_conditions(self, 
@@ -906,7 +950,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     )
                 elif self.condition_index_method.lower() == "dinov3":
                     random_idx = self._generate_condition_indices_dinov3(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
                 else :
                     random_idx = self._generate_condition_indices_mc_fov(
@@ -964,21 +1008,49 @@ class WorldMemMinecraft(DiffusionForcingBase):
             first_frame = torch.from_numpy(first_frame)
             new_actions = torch.from_numpy(new_actions)
             first_pose = torch.from_numpy(first_pose)
+            
+            # Encode the first frame to get its latent
             first_frame_encode = self.encode(first_frame[None, None].to(device))
+            
+            # Initialize all memory components
             memory_latent_frames = first_frame_encode.cpu()
+
+            # if we use the dinov3, we need to store the raw frame
+            if self.condition_index_method.lower() == "dinov3":
+                memory_raw_frames = first_frame[None, None].cpu() # Store the raw frame
+            else:
+                memory_raw_frames = None
+
             memory_actions = new_actions[None, None].to(device)
             memory_poses = first_pose[None, None].to(device)
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
             memory_frame_idx = torch.tensor([[0]]).to(device)
-            return first_frame.cpu().numpy(), memory_latent_frames.cpu().numpy(), memory_actions.cpu().numpy(), memory_poses.cpu().numpy(), memory_c2w.cpu().numpy(), memory_frame_idx.cpu().numpy()
+
+            return (first_frame.cpu().numpy(), 
+                    memory_latent_frames.cpu().numpy(), 
+                    memory_actions.cpu().numpy(), 
+                    memory_poses.cpu().numpy(), 
+                    memory_c2w.cpu().numpy(), 
+                    memory_frame_idx.cpu().numpy(),
+                    memory_raw_frames.cpu().numpy())
+
         else:
+            # Load existing memory from numpy arrays
             memory_latent_frames = torch.from_numpy(memory_latent_frames)
+
+            # if we use the dinov3, we need to store the raw frame
+            if self.condition_index_method.lower() == "dinov3":
+                memory_raw_frames = torch.from_numpy(memory_raw_frames)
+            else:
+                memory_raw_frames = None
+                
             memory_actions = torch.from_numpy(memory_actions).to(device)
             memory_poses = torch.from_numpy(memory_poses).to(device)
             memory_c2w = torch.from_numpy(memory_c2w).to(device)
             memory_frame_idx = torch.from_numpy(memory_frame_idx).to(device)
             new_actions = new_actions.to(device)
+
 
         curr_frame = 0
         batch_size = 1
@@ -1052,7 +1124,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     )
                 elif self.condition_index_method.lower() == "dinov3":
                     random_idx = self._generate_condition_indices_dinov3(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
                     )
                 else :
                     random_idx = self._generate_condition_indices_mc_fov(
@@ -1095,8 +1167,31 @@ class WorldMemMinecraft(DiffusionForcingBase):
             pbar.update(next_horizon)
             ai += next_horizon
 
-        memory_latent_frames = torch.cat([memory_latent_frames, xs_pred[n_context_frames:]])
-        xs_pred = self.decode(xs_pred[n_context_frames:].to(device)).cpu()
+        
+        # Decode the newly generated latent frames
+        newly_generated_latents = xs_pred[n_context_frames:]
 
-        return xs_pred.cpu().numpy(), memory_latent_frames.cpu().numpy(), memory_actions.cpu().numpy(), \
-            memory_poses.cpu().numpy(), memory_c2w.cpu().numpy(), memory_frame_idx.cpu().numpy()
+        # Decode the newly generated latent frames into images
+        xs_pred_decoded = self.decode(newly_generated_latents.to(device)).cpu()
+
+
+        # Update the memory banks
+        memory_latent_frames = torch.cat([memory_latent_frames, newly_generated_latents])
+
+        # Update the memory raw frames if we use the dinov3
+        if self.condition_index_method.lower() == "dinov3":
+            memory_raw_frames = torch.cat([memory_raw_frames, xs_pred_decoded.unsqueeze(1)]) # Add batch dim for consistency
+        else:
+            memory_raw_frames = None
+
+
+        # memory_latent_frames = torch.cat([memory_latent_frames, xs_pred[n_context_frames:]])
+        # xs_pred = self.decode(xs_pred[n_context_frames:].to(device)).cpu()
+
+        return (xs_pred_decoded.cpu().numpy(), 
+                memory_latent_frames.cpu().numpy(), 
+                memory_actions.cpu().numpy(), 
+                memory_poses.cpu().numpy(), 
+                memory_c2w.cpu().numpy(), 
+                memory_frame_idx.cpu().numpy(),
+                memory_raw_frames.cpu().numpy())
