@@ -356,7 +356,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
         self.next_frame_length = getattr(cfg, "next_frame_length", 1)
         self.require_pose_prediction = getattr(cfg, "require_pose_prediction", False)
         # New parameter to select retrieval method
-        self.condition_index_method = getattr(cfg, "condition_index_method", "fov")
+        #self.condition_index_method = getattr(cfg, "condition_index_method", "fov")
+        self.condition_index_method = getattr(cfg, "condition_index_method", "dinov3")
 
         super().__init__(cfg)
         
