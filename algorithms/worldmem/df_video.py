@@ -1183,7 +1183,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         # Update the memory raw frames if we use the dinov3
         if self.condition_index_method.lower() == "dinov3":
-            memory_raw_frames = torch.cat([memory_raw_frames, xs_pred_decoded.unsqueeze(1)]) # Add batch dim for consistency
+            # Keep shape as [T, B, C, H, W]; concatenate along time dimension
+            memory_raw_frames = torch.cat([memory_raw_frames, xs_pred_decoded])
         else:
             memory_raw_frames = None
 

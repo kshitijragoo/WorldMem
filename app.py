@@ -378,6 +378,7 @@ def on_image_click(selected_image):
     return input_history, selected_image, selected_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
 def set_memory(examples_case):
+    memory_raw_frames = None
     if examples_case == '1':
         data_bundle = np.load("assets/examples/case1.npz")
         input_history = data_bundle['input_history'].item()
@@ -422,7 +423,7 @@ def set_memory(examples_case):
     temporal_video_path = tempfile.NamedTemporaryFile(suffix='.mp4').name
     save_video(out_video, temporal_video_path)
 
-    return input_history, out_video[-1], temporal_video_path, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx
+    return input_history, out_video[-1], temporal_video_path, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
 css = """
 h1 {
