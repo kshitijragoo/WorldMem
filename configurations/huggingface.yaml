@@ -63,8 +63,8 @@ vae_path: yslan/worldmem_checkpoints/vae_only.ckpt
 pose_predictor_path: yslan/worldmem_checkpoints/pose_prediction_model_only.ckpt
 
 # URL for the DINOv3 weights, get it from environment variable
-dinov3_weights_path = os.getenv("DINOV3_WEIGHTS_PATH")
-if dinov3_weights_path is None:
-    raise ValueError("DINOV3_WEIGHTS_PATH environment variable is not set")
+# Path for the DINOv3 weights, resolved from an environment variable
+dinov3_weights_path: ${oc.env:DINOV3_WEIGHTS_PATH}
+
 
 next_frame_length: 1

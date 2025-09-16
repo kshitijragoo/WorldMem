@@ -359,6 +359,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
         #self.condition_index_method = getattr(cfg, "condition_index_method", "fov")
         self.condition_index_method = getattr(cfg, "condition_index_method", "dinov3")
 
+        #print the condition index method
+        print(f"Condition index method: {self.condition_index_method}")
+
         super().__init__(cfg)
         
                 # Initialize DINOv3 feature extractor if the method is selected

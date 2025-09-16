@@ -26,6 +26,7 @@ class DINOv3FeatureExtractor:
         """
         Loads the specified DINOv3 model using a specific weights file, 
         sets it to evaluation mode, and freezes all its parameters.
+        Returns None if loading fails.
         """
         try:
             # Use the provided weights_path instead of the default `pretrained=True`
@@ -47,7 +48,8 @@ class DINOv3FeatureExtractor:
             return model
         except Exception as e:
             print(f"Error loading DINOv3 model: {e}")
-            raise
+            print("Proceeding without DINOv3 model. Feature extraction will return None.")
+            return None
 
     def extract_patch_features(self, image_batch: torch.Tensor) -> torch.Tensor:
         """
