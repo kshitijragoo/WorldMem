@@ -361,15 +361,18 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         super().__init__(cfg)
         
-        # Initialize DINOv3 feature extractor if the method is selected
+                # Initialize DINOv3 feature extractor if the method is selected
         if self.condition_index_method.lower() == "dinov3":
             print("Initializing DINOv3-based hybrid retrieval.")
-            self.dino_feature_extractor = DINOv3FeatureExtractor(model_name='dinov3_vitl16', device=self.device)
+            self.dino_feature_extractor = DINOv3FeatureExtractor(
+                model_name='dinov3_vitl16', 
+                device=self.device,
+                weights_path=cfg.dinov3_weights_path
+            )
             self.memory_candidate_pool_size = 64  # Hyperparameter N
             self.w_geom = 0.4  # Hyperparameter for geometric score weight
             self.w_sem = 0.6   # Hyperparameter for semantic score weight
             self.similarity_threshold = 0.95 # For redundancy filtering
-
 
         super().__init__(cfg)
             

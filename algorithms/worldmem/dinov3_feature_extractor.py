@@ -8,29 +8,42 @@ class DINOv3FeatureExtractor:
     This class ensures the model is loaded only once and operates in an efficient,
     inference-only mode.
     """
-    def __init__(self, model_name: str = 'dinov3_vitl16', device: str = 'cuda'):
+    def __init__(self, model_name: str = 'dinov3_vitl16', device: str = 'cuda', weights_path: str = None):
         """
         Initializes the feature extractor.
 
         Args:
             model_name (str): The name of the DINOv3 model from torch.hub.
             device (str): The compute device ('cuda' or 'cpu').
+            weights_path (str): The URL or local file path for the pretrained model weights.
         """
         self.device = device
-        self.model = self._load_and_freeze_model(model_name)
+        if weights_path is None:
+            raise ValueError("A 'weights_path' (URL or local file) for the DINOv3 model must be provided.")
+        self.model = self._load_and_freeze_model(model_name, weights_path)
         
-    def _load_and_freeze_model(self, model_name: str) -> nn.Module:
+    def _load_and_freeze_model(self, model_name: str, weights_path: str) -> nn.Module:
         """
-        Loads the specified DINOv3 model, sets it to evaluation mode, and freezes
-        all its parameters.
+        Loads the specified DINOv3 model using a specific weights file, 
+        sets it to evaluation mode, and freezes all its parameters.
         """
         try:
-            model = torch.hub.load('facebookresearch/dinov3', model_name, pretrained=True)
+            # Use the provided weights_path instead of the default `pretrained=True`
+            model = torch.hub.load('facebookresearch/dinov3', model_name, pretrained=False)
+            
+            # Load the state dict from the provided URL or local path
+            if weights_path.startswith('http'):
+                state_dict = torch.hub.load_state_dict_from_url(weights_path, map_location=self.device)
+            else:
+                state_dict = torch.load(weights_path, map_location=self.device)
+
+            model.load_state_dict(state_dict)
             model.eval()
             model.to(self.device)
+
             for param in model.parameters():
                 param.requires_grad = False
-            print(f"Successfully loaded and froze DINOv3 model '{model_name}' on {self.device}.")
+            print(f"Successfully loaded and froze DINOv3 model '{model_name}' on {self.device} from '{weights_path}'.")
             return model
         except Exception as e:
             print(f"Error loading DINOv3 model: {e}")
@@ -42,11 +55,12 @@ class DINOv3FeatureExtractor:
 
         Args:
             image_batch (torch.Tensor): A batch of preprocessed images with shape
-                                       , already on the correct device.
+                                         [batch_size, channels, height, width], 
+                                         already on the correct device.
 
         Returns:
             torch.Tensor: A tensor of patch features with shape 
-                         .
+                          [batch_size, num_patches, feature_dimension].
         """
         if image_batch.device!= self.device:
             image_batch = image_batch.to(self.device)
