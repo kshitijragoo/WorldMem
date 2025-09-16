@@ -26,4 +26,3 @@ diffusers
 timm
 gradio
 spaces
-ffmpeg==4.3.2
