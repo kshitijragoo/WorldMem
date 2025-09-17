@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import Dict
+from transformers import AutoModel
+
 
 class DINOv3FeatureExtractor:
     """
