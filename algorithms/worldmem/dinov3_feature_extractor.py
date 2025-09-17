@@ -8,7 +8,7 @@ class DINOv3FeatureExtractor:
     This class ensures the model is loaded only once and operates in an efficient,
     inference-only mode.
     """
-    def __init__(self, hf_model_name: str = 'facebook/dinov3-vitl16-pretrain-lvd1689m', device: str = 'cuda'):
+    def __init__(self, model_id: str = 'facebook/dinov3-vits16-pretrain-lvd1689m', device: str = 'cuda'):
         """
         Initializes the feature extractor using a Hugging Face model identifier.
 
@@ -17,7 +17,7 @@ class DINOv3FeatureExtractor:
             device (str): The compute device ('cuda' or 'cpu').
         """
         self.device = device
-        self.model = self._load_and_freeze_model(hf_model_name)
+        self.model = self._load_and_freeze_model(model_id)
 
     def _load_and_freeze_model(self, hf_model_name: str) -> nn.Module:
         """
@@ -25,16 +25,14 @@ class DINOv3FeatureExtractor:
         evaluation mode, and freezes all its parameters.
         """
         try:
-            # Load the model using the transformers library
-            model = AutoModel.from_pretrained(hf_model_name)
+            model = AutoModel.from_pretrained(model_id)
             model.eval()
             model.to(self.device)
 
-            # Freeze all parameters
             for param in model.parameters():
                 param.requires_grad = False
             
-            print(f"Successfully loaded and froze DINOv3 model '{hf_model_name}' on {self.device}.")
+            print(f"Successfully loaded and froze DINOv3 model '{model_id}' on {self.device}.")
             return model
         except Exception as e:
             print(f"Error loading DINOv3 model from Hugging Face: {e}")
