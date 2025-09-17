@@ -21,7 +21,7 @@ class DINOv3FeatureExtractor:
         self.device = device
         self.model = self._load_and_freeze_model(model_id)
 
-    def _load_and_freeze_model(self, hf_model_name: str) -> nn.Module:
+    def _load_and_freeze_model(self, model_id: str) -> nn.Module:
         """
         Loads the specified DINOv3 model from Hugging Face, sets it to
         evaluation mode, and freezes all its parameters.
