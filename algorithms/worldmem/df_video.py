@@ -366,7 +366,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         print(f"Condition index method: {self.condition_index_method}")
 
         super().__init__(cfg)
-        
+
         # Initialize DINOv3 feature extractor if the method is selected
         if self.condition_index_method.lower() == "dinov3":
             print("Initializing DINOv3-based hybrid retrieval.")
@@ -1124,14 +1124,17 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # Handle condition similarity logic
             if memory_condition_length:
                 if self.condition_index_method.lower() == "knn":
+                    print("Using knn for condition index")
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                 elif self.condition_index_method.lower() == "dinov3":
+                    print("Using dinov3 for condition index")
                     random_idx = self._generate_condition_indices_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
                     )
                 else :
+                    print("Using mc_fov for condition index")
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
