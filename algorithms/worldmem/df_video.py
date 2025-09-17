@@ -336,6 +336,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
         Args:
             cfg (DictConfig): Configuration object.
         """
+
+        super().__init__(cfg)
+        
         self.n_tokens = cfg.n_frames // cfg.frame_stack # number of max tokens for the model
         self.n_frames = cfg.n_frames
         if hasattr(cfg, "n_tokens"):
@@ -375,7 +378,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             self.w_sem = 0.6   # Hyperparameter for semantic score weight
             self.similarity_threshold = 0.95 # For redundancy filtering
 
-        super().__init__(cfg)
+        
             
     def _build_model(self):
 
