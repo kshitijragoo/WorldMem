@@ -1,4 +1,4 @@
-#!/usr/bin/env fish
+#!/usr/bin/env bash
 
 echo "Navigating to parent directory..."
 cd ..
