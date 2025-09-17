@@ -337,8 +337,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             cfg (DictConfig): Configuration object.
         """
 
-        super().__init__(cfg)
         
+
         self.n_tokens = cfg.n_frames // cfg.frame_stack # number of max tokens for the model
         self.n_frames = cfg.n_frames
         if hasattr(cfg, "n_tokens"):
@@ -365,6 +365,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         #print the condition index method
         print(f"Condition index method: {self.condition_index_method}")
 
+        super().__init__(cfg)
         
         # Initialize DINOv3 feature extractor if the method is selected
         if self.condition_index_method.lower() == "dinov3":
