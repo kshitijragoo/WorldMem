@@ -1038,7 +1038,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     memory_poses.cpu().numpy(), 
                     memory_c2w.cpu().numpy(), 
                     memory_frame_idx.cpu().numpy(),
-                    memory_raw_frames.cpu().numpy())
+                    memory_raw_frames.cpu().numpy() if memory_raw_frames is not None else None)
 
         else:
             # Load existing memory from numpy arrays
@@ -1203,4 +1203,4 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 memory_poses.cpu().numpy(), 
                 memory_c2w.cpu().numpy(), 
                 memory_frame_idx.cpu().numpy(),
-                memory_raw_frames.cpu().numpy())
+                memory_raw_frames.cpu().numpy() if memory_raw_frames is not None else None)
