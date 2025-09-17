@@ -62,9 +62,7 @@ diffusion_path: yslan/worldmem_checkpoints/diffusion_only.ckpt
 vae_path: yslan/worldmem_checkpoints/vae_only.ckpt
 pose_predictor_path: yslan/worldmem_checkpoints/pose_prediction_model_only.ckpt
 
-# URL for the DINOv3 weights, get it from environment variable
-# Path for the DINOv3 weights, resolved from an environment variable
-dinov3_weights_path: ${oc.env:DINOV3_WEIGHTS_PATH}
-
+# Hugging Face identifier for the DINOv3 model
+dinov3_model_name: facebook/dinov3-vitl16-pretrain-lvd1689m
 
 next_frame_length: 1
