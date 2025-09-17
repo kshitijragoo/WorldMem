@@ -11,7 +11,7 @@ warmup_steps: 1000
 optimizer_beta: [0.9, 0.99]
 action_cond_dim: 25
 use_plucker: true
-condition_index_method: fov  # options: fov, knn
+condition_index_method: dinov3  # options: fov, knn
 
 diffusion:
   # training
