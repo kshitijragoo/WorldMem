@@ -367,7 +367,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         if self.condition_index_method.lower() == "dinov3":
             print("Initializing DINOv3-based hybrid retrieval.")
             self.dino_feature_extractor = DINOv3FeatureExtractor(
-                model_id=cfg.dinov3_model_id, # <-- Use the new key from your YAML file
+                model_id=cfg.dinov3_model_id, 
                 device=self.device
             )
             self.memory_candidate_pool_size = 64  # Hyperparameter N

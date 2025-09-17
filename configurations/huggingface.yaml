@@ -63,6 +63,6 @@ vae_path: yslan/worldmem_checkpoints/vae_only.ckpt
 pose_predictor_path: yslan/worldmem_checkpoints/pose_prediction_model_only.ckpt
 
 # Hugging Face identifier for the DINOv3 model
-dinov3_model_name: facebook/dinov3-vitl16-pretrain-lvd1689m
+dinov3_model_id: facebook/dinov3-vits16-pretrain-lvd1689m
 
 next_frame_length: 1
