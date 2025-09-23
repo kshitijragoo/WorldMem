@@ -938,6 +938,17 @@ class WorldMemMinecraft(DiffusionForcingBase):
         xs_pred = xs[:n_context_frames].clone()
         curr_frame += n_context_frames
 
+        # --- VGGT WRITE TO MEMORY (Initial Context) ---
+        if self.condition_index_method.lower() == "vggt_surfel":
+            print("Initializing geometric memory with context frames...")
+            for i in range(n_context_frames):
+                # Assuming batch size is 1 for validation simplicity
+                self.vggt_retriever.add_view_to_memory(
+                    xs_raw[i, 0],
+                    c2w_mat[i, 0]
+                )
+
+
         # Progress bar for sampling
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
 
