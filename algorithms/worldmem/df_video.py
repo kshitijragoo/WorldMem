@@ -947,12 +947,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     xs_raw[i, 0],
                     c2w_mat[i, 0]
                 )
+        
         curr_frame += n_context_frames
 
         # Progress bar for sampling
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
         
-        generated_latents_list = []
+        generated_latents_list =
 
         while curr_frame < n_frames:
             # Determine the horizon for the current chunk
@@ -1068,7 +1069,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_poses = first_pose[None, None].to(device)
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
-            memory_frame_idx = torch.tensor([[0]]).to(device)
+            # --- FIX: Correctly initialize the frame index tensor for the first frame ---
+            memory_frame_idx = torch.tensor().to(device)
 
             # --- VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
@@ -1108,12 +1110,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
         pbar = tqdm(total=curr_frame + len(new_actions), initial=curr_frame, desc="Sampling")
 
         # Predict all future poses first
-        new_pose_condition_list = []
+        new_pose_condition_list =
         last_pose_condition = memory_poses[-1].clone()
         for hi in range(len(new_actions)):
-            last_frame_for_pose = self.decode(xs_pred[-1].unsqueeze(0).to(device)).squeeze(0)
+            # --- FIX: Use the latent vector directly for pose prediction ---
+            last_frame_for_pose = xs_pred[-1].clone() # This is a latent vector
+            
             last_pose_condition[:,3:] = last_pose_condition[:,3:] // 15
-            new_pose_condition_offset = self.pose_prediction_model(last_frame_for_pose, new_actions[None, hi], last_pose_condition)
+            new_pose_condition_offset = self.pose_prediction_model(last_frame_for_pose.to(device), new_actions[None, hi], last_pose_condition)
             new_pose_condition_offset[:,3:] = torch.round(new_pose_condition_offset[:,3:])
             new_pose_condition = last_pose_condition + new_pose_condition_offset
             new_pose_condition[:,3:] = new_pose_condition[:,3:] * 15
@@ -1123,7 +1127,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         new_pose_condition_list = torch.cat(new_pose_condition_list, 0)
         
         ai = 0
-        newly_generated_latents_all = []
+        newly_generated_latents_all =
         while ai < len(new_actions):
             next_horizon = min(self.next_frame_length, len(new_actions) - ai)
             
