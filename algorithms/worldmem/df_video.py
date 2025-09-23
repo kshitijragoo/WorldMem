@@ -1070,7 +1070,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
             # --- FIX: Correctly initialize the frame index tensor for the first frame ---
-            memory_frame_idx = torch.tensor().to(device)
+            memory_frame_idx = torch.tensor([[0]]).to(device)
 
             # --- VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
