@@ -1,3 +1,5 @@
+# df_video.py
+
 import os
 import random
 import math
@@ -1066,7 +1068,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_poses = first_pose[None, None].to(device)
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
-            memory_frame_idx = torch.tensor().to(device)
+            memory_frame_idx = torch.tensor([[0]]).to(device)
 
             # --- VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
