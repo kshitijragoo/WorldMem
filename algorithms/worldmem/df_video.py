@@ -953,7 +953,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         # Progress bar for sampling
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
         
-        generated_latents_list =
+        generated_latents_list = []
 
         while curr_frame < n_frames:
             # Determine the horizon for the current chunk
@@ -1110,7 +1110,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         pbar = tqdm(total=curr_frame + len(new_actions), initial=curr_frame, desc="Sampling")
 
         # Predict all future poses first
-        new_pose_condition_list =
+        new_pose_condition_list = []
         last_pose_condition = memory_poses[-1].clone()
         for hi in range(len(new_actions)):
             # --- FIX: Use the latent vector directly for pose prediction ---
@@ -1127,7 +1127,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         new_pose_condition_list = torch.cat(new_pose_condition_list, 0)
         
         ai = 0
-        newly_generated_latents_all =
+        newly_generated_latents_all = []
         while ai < len(new_actions):
             next_horizon = min(self.next_frame_length, len(new_actions) - ai)
             
