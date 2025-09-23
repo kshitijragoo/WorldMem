@@ -22,6 +22,9 @@ from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
 from .dinov3_feature_extractor import DINOv3FeatureExtractor
 
+from.vggt_memory_retriever import VGGTMemoryRetriever
+
+
 import glob
 
 # Utility Functions
@@ -378,6 +381,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
             self.w_geom = 0.4  # Hyperparameter for geometric score weight
             self.w_sem = 0.6   # Hyperparameter for semantic score weight
             self.similarity_threshold = 0.95 # For redundancy filtering
+
+        elif self.condition_index_method.lower() == "vggt_surfel":
+            print("Initializing VGGT-based geometric memory retrieval.")
+            self.vggt_retriever = VGGTMemoryRetriever(device=self.device)
+
+
 
         
             
@@ -957,6 +966,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
+                elif self.condition_index_method.lower() == "vggt_surfel":
+                    print("Using VGGT Surfel for condition index")
+                    # `curr_frame` here is the index in the *total* memory
+                    target_pose_c2w = euler_to_camera_to_world_matrix(pose_conditions[curr_frame, 0, :])
+                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
+                        target_pose_c2w, k=memory_condition_length
+                    )
+                    random_idx = torch.tensor(retrieved_indices).unsqueeze(1) # Batch size is 1
                 else :
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
@@ -992,6 +1009,23 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if memory_condition_length:
                 xs_pred = xs_pred[:-memory_condition_length]
 
+            # --- WRITING TO VGGT MEMORY ---
+            # After a chunk is generated, update the geometric memory.
+            if self.condition_index_method.lower() == "vggt_surfel":
+                # 1. Isolate the newly generated latent frames for the current chunk
+                newly_generated_latents = xs_pred[curr_frame : curr_frame + horizon]
+                
+                # 2. Decode this chunk to get raw image frames
+                xs_pred_decoded = self.decode(newly_generated_latents.to(self.device))
+                
+                # 3. Add each new frame and its pose to the geometric memory
+                for i in range(horizon):
+                    frame_index_global = curr_frame + i
+                    self.vggt_retriever.add_view_to_memory(
+                       xs_pred_decoded[i, 0], # Assuming batch size 1 for simplicity
+                       euler_to_camera_to_world_matrix(pose_conditions[frame_index_global, 0, :])
+                    )
+
             curr_frame += horizon
             pbar.update(horizon)
 
@@ -1020,6 +1054,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # Initialize all memory components
             memory_latent_frames = first_frame_encode.cpu()
 
+            # --- VGGT WRITE TO MEMORY (First Frame) ---
+            if self.condition_index_method.lower() == "vggt_surfel":
+                self.vggt_retriever.add_view_to_memory(first_frame, new_c2w_mat)
+
+
             # if we use the dinov3, we need to store the raw frame
             if self.condition_index_method.lower() == "dinov3":
                 memory_raw_frames = first_frame[None, None].cpu() # Store the raw frame
@@ -1045,7 +1084,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_latent_frames = torch.from_numpy(memory_latent_frames)
 
             # if we use the dinov3, we need to store the raw frame
-            if self.condition_index_method.lower() == "dinov3":
+            if self.condition_index_method.lower() == "dinov3" and memory_raw_frames is not None:
                 memory_raw_frames = torch.from_numpy(memory_raw_frames)
             else:
                 memory_raw_frames = None
@@ -1133,6 +1172,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
                     )
+                elif self.condition_index_method.lower() == "vggt_surfel":
+                    target_pose_c2w = euler_to_camera_to_world_matrix(pose_conditions[curr_frame, 0, :])
+                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
+                        target_pose_c2w, k=memory_condition_length
+                    )
+                    random_idx = torch.tensor(retrieved_indices).unsqueeze(1).repeat(1, batch_size)
                 else :
                     print("Using mc_fov for condition index")
                     random_idx = self._generate_condition_indices_mc_fov(
@@ -1181,6 +1226,19 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         # Decode the newly generated latent frames into images
         xs_pred_decoded = self.decode(newly_generated_latents.to(device)).cpu()
+
+        
+        # --- WRITING TO VGGT MEMORY ---
+        # After generating new frames and decoding them (`xs_pred_decoded`),
+        # we write them to the VGGT memory.
+        if self.condition_index_method.lower() == "vggt_surfel":
+            num_new_frames = xs_pred_decoded.shape
+            start_idx = len(memory_latent_frames) # Index before adding new latents
+            for i in range(num_new_frames):
+                frame_idx = start_idx + i
+                new_frame_tensor = xs_pred_decoded[i, 0]
+                new_c2w = memory_c2w[frame_idx, 0]
+                self.vggt_retriever.add_view_to_memory(new_frame_tensor, new_c2w)
 
 
         # Update the memory banks
