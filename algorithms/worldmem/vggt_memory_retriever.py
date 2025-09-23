@@ -23,9 +23,9 @@ class VGGTMemoryRetriever:
         print("VGGT model loaded.")
 
         # Memory stores
-        self.view_database =  # Stores (raw_frame_tensor, c2w_matrix)
+        self.view_database = []  # Stores (raw_frame_tensor, c2w_matrix)
         self.surfels = None      # Dict storing all surfel positions, normals, radii
-        self.surfel_to_views =# List of lists, mapping surfel index to view indices
+        self.surfel_to_views = [] # List of lists, mapping surfel index to view indices
         self.kdtree = None       # KD-Tree for efficient spatial queries [8]
 
         # Hyperparameters for surfel merging [1, 1]
