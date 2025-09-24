@@ -295,7 +295,24 @@ def reinitialize_worldmem_with_method(condition_index_method):
     
     # Create a new instance with the updated configuration
     new_worldmem = WorldMemMinecraft(cfg)
-        
+    
+    # Load the same checkpoints
+    load_custom_checkpoint(algo=new_worldmem.diffusion_model, checkpoint_path=cfg.diffusion_path)
+    load_custom_checkpoint(algo=new_worldmem.vae, checkpoint_path=cfg.vae_path)
+    load_custom_checkpoint(algo=new_worldmem.pose_prediction_model, checkpoint_path=cfg.pose_predictor_path)
+    
+    # Move to device and set to eval mode
+    new_worldmem.to("cuda").eval()
+    
+    # Copy current dynamic settings from the old instance
+    new_worldmem.sampling_timesteps = worldmem.sampling_timesteps
+    new_worldmem.diffusion_model.sampling_timesteps = worldmem.sampling_timesteps
+    new_worldmem.n_tokens = worldmem.n_tokens
+    new_worldmem.memory_condition_length = worldmem.memory_condition_length
+    new_worldmem.next_frame_length = worldmem.next_frame_length
+
+    print("FINAL: condition index method to", condition_index_method)
+
     return new_worldmem
 
 def set_condition_index_method(condition_index_method, condition_index_method_state):
@@ -307,8 +324,6 @@ def set_condition_index_method(condition_index_method, condition_index_method_st
     worldmem = reinitialize_worldmem_with_method(condition_index_method)
     
     condition_index_method_state = condition_index_method
-    print("FINAL: condition index method to", condition_index_method)
-
     print("Reinitialization complete!")
     return condition_index_method_state
 
