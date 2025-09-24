@@ -18,7 +18,7 @@ class VGGTMemoryRetriever:
         
         # Load the pre-trained VGGT model [9]
         print("Loading VGGT model...")
-        self.vggt_model = VGGT.from_pretrained("facebook/vggt-v2-gen-any").to(self.device, dtype=self.dtype)
+        self.vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(self.device, dtype=self.dtype)
         self.vggt_model.eval()
         print("VGGT model loaded.")
 
