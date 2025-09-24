@@ -307,6 +307,8 @@ def set_condition_index_method(condition_index_method, condition_index_method_st
     worldmem = reinitialize_worldmem_with_method(condition_index_method)
     
     condition_index_method_state = condition_index_method
+    print("FINAL: condition index method to", condition_index_method)
+
     print("Reinitialization complete!")
     return condition_index_method_state
 
