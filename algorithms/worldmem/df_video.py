@@ -1164,38 +1164,36 @@ class WorldMemMinecraft(DiffusionForcingBase):
             scheduling_matrix = self._generate_scheduling_matrix(next_horizon)
             chunk = torch.randn((next_horizon, batch_size, *xs_pred.shape[2:]), device=xs_pred.device)
             chunk = torch.clamp(chunk, -self.clip_noise, self.clip_noise)
-            xs_pred_full = torch.cat([xs_pred, chunk], 0)
+            xs_pred = torch.cat([xs_pred, chunk], 0)
 
             start_frame = max(0, curr_frame + next_horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + next_horizon})
 
-            # --- SYNCHRONOUS READ FROM MEMORY ---
+            # Handle condition similarity logic
             random_idx = None
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
+                    print("Using vggt_surfel for condition index")
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
-                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
-                        target_pose_c2w, k=memory_condition_length, image_size=first_frame.shape[-2:]
-                    )
-                    random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
+                    random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
                 elif self.condition_index_method.lower() == "knn":
+                    print("Using knn for condition index")
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                 elif self.condition_index_method.lower() == "dinov3":
+                    print("Using dinov3 for condition index")
                     random_idx = self._generate_condition_indices_dinov3(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
                     )
                 else :
+                    print("Using mc_fov for condition index")
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
-
-
-                memory_latents = xs_pred[random_idx.squeeze(1), torch.arange(batch_size)].clone()
-                xs_pred_for_diffusion = torch.cat([xs_pred_full, memory_latents], 0)
-            else:
-                xs_pred_for_diffusion = xs_pred_full
+                
+                xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
 
             input_condition, input_pose_condition, frame_idx_list = self._prepare_conditions(
                 start_frame, curr_frame, next_horizon, conditions, pose_conditions, c2w_mat, frame_idx, random_idx,
@@ -1206,16 +1204,24 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 from_noise_levels, to_noise_levels = self._prepare_noise_levels(
                     scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
                 )
-                xs_pred_for_diffusion[start_frame:] = self.diffusion_model.sample_step(
-                    xs_pred_for_diffusion[start_frame:].to(self.device),
-                    input_condition, input_pose_condition,
-                    from_noise_levels[start_frame:], to_noise_levels[start_frame:],
-                    current_frame=curr_frame, mode="validation",
-                    reference_length=memory_condition_length, frame_idx=frame_idx_list
+
+                xs_pred[start_frame:] = self.diffusion_model.sample_step(
+                    xs_pred[start_frame:].to(self.device),
+                    input_condition,
+                    input_pose_condition,
+                    from_noise_levels[start_frame:],
+                    to_noise_levels[start_frame:],
+                    current_frame=curr_frame,
+                    mode="validation",
+                    reference_length=memory_condition_length,
+                    frame_idx=frame_idx_list
                 ).cpu()
 
-            newly_generated_latents = xs_pred_for_diffusion[curr_frame : curr_frame + next_horizon]
-            xs_pred = torch.cat([xs_pred, newly_generated_latents], 0)
+            # Remove condition similarity frames if applicable
+            if memory_condition_length:
+                xs_pred = xs_pred[:-memory_condition_length]
+
+            newly_generated_latents = xs_pred[curr_frame : curr_frame + next_horizon]
             newly_generated_latents_all.append(newly_generated_latents)
 
             # --- ASYNCHRONOUS WRITE TO MEMORY (Incremental) ---
