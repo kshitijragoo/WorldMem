@@ -45,7 +45,24 @@ class VGGTMemoryRetriever:
         
         # 1. Geometry Acquisition via VGGT [1, 1]
         image_size_hw = new_frame_tensor.shape[-2:]
-        vggt_input = new_frame_tensor.unsqueeze(0).to(self.device, dtype=self.dtype)
+        
+        # Resize to make dimensions compatible with VGGT patch size (14)
+        h, w = image_size_hw
+        new_h = ((h + 13) // 14) * 14  # Round up to nearest multiple of 14
+        new_w = ((w + 13) // 14) * 14  # Round up to nearest multiple of 14
+        
+        if h != new_h or w != new_w:
+            import torch.nn.functional as F
+            resized_frame = F.interpolate(
+                new_frame_tensor.unsqueeze(0), 
+                size=(new_h, new_w), 
+                mode='bilinear', 
+                align_corners=False
+            ).squeeze(0)
+        else:
+            resized_frame = new_frame_tensor
+            
+        vggt_input = resized_frame.unsqueeze(0).to(self.device, dtype=self.dtype)
         
         with torch.cuda.amp.autocast(dtype=self.dtype):
             predictions = self.vggt_model(vggt_input)
