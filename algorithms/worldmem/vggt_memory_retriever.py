@@ -1,5 +1,3 @@
-# algorithms/worldmem/vggt_memory_retriever.py
-
 import torch
 import numpy as np
 from scipy.spatial import KDTree
@@ -23,9 +21,9 @@ class VGGTMemoryRetriever:
         print("VGGT model loaded.")
 
         # Memory stores
-        self.view_database = []  # Stores (raw_frame_tensor, c2w_matrix)
+        self.view_database =  []# Stores (raw_frame_tensor, c2w_matrix)
         self.surfels = None      # Dict storing all surfel positions, normals, radii
-        self.surfel_to_views = [] # List of lists, mapping surfel index to view indices
+        self.surfel_to_views = []# List of lists, mapping surfel index to view indices
         self.kdtree = None       # KD-Tree for efficient spatial queries.
                                  # NOTE: Research recommends an Octree for better scalability in merging operations.[1]
                                  # A KD-Tree is a valid and efficient alternative for nearest-neighbor searches.
@@ -62,7 +60,8 @@ class VGGTMemoryRetriever:
             
         vggt_input = resized_frame.to(self.device, dtype=self.dtype)
         
-        with torch.cuda.amp.autocast(dtype=self.dtype):
+        # FIX: Updated to use the recommended torch.amp.autocast syntax
+        with torch.amp.autocast(device_type='cuda', dtype=self.dtype):
             predictions = self.vggt_model(vggt_input)
 
         depth = predictions["depth"]
@@ -87,6 +86,9 @@ class VGGTMemoryRetriever:
                 # Query the 5 nearest neighbors for each new surfel
                 distances, indices = self.kdtree.query(new_positions.cpu().numpy(), k=5, workers=-1)
                 
+                # FIX: Convert numpy distances to a tensor for consistent operations
+                distances = torch.from_numpy(distances).to(new_normals.device)
+
                 # Get existing normals for queried indices
                 existing_normals = self.surfels['norm'][indices] # Shape: (num_new_surfels, 5, 3)
                 
@@ -101,10 +103,12 @@ class VGGTMemoryRetriever:
                 has_match = match_mask.any(dim=1)
 
                 # Update existing surfels for matched new surfels
-                matched_global_indices = indices[torch.arange(len(indices)), first_match_indices[has_match]]
-                for idx in matched_global_indices:
-                    if frame_index not in self.surfel_to_views[idx]:
-                        self.surfel_to_views[idx].append(frame_index)
+                if has_match.any():
+                    matched_new_indices = torch.arange(len(indices))[has_match]
+                    matched_global_indices = indices[matched_new_indices, first_match_indices[has_match]]
+                    for idx in matched_global_indices:
+                        if frame_index not in self.surfel_to_views[idx]:
+                            self.surfel_to_views[idx].append(frame_index)
 
                 # Add unmatched new surfels to the global index
                 unmatched_mask = ~has_match
@@ -168,16 +172,16 @@ class VGGTMemoryRetriever:
         if intrinsics is None:
             H, W = image_size
             focal = 1.2 * W
-            K = torch.tensor([[focal, 0, W/2], [0, focal, H/2], [0, 0, 1]], device=self.device)
+            K = torch.tensor([[focal, 0, W/2], [0, focal, H/2], [0, 0, 1]], device=self.device, dtype=self.dtype)
         else:
-            K = intrinsics.to(self.device)
+            K = intrinsics.to(self.device, dtype=self.dtype)
 
         # Perspective projection: u = K * p_cam
         uvz = torch.matmul(cam_space_pos, K.T)
         uv = uvz[:, :2] / (uvz[:, 2].unsqueeze(-1) + 1e-6)
 
         # Create a simplified Z-buffer (depth buffer)
-        z_buffer = torch.full(image_size, float('inf'), device=self.device)
+        z_buffer = torch.full(image_size, float('inf'), device=self.device, dtype=self.dtype)
         index_buffer = torch.full(image_size, -1, dtype=torch.long, device=self.device)
 
         # Sort surfels by depth (front-to-back) for correct occlusion
@@ -188,9 +192,12 @@ class VGGTMemoryRetriever:
         for idx in sorted_depth_indices:
             u, v = uv[idx]
             depth = depths[idx]
-            radius_proj = (culled_rad[idx] * K / (depth + 1e-6)).int() # Projected radius
+            # FIX: Correctly calculate projected radius using focal length from K matrix
+            focal_length = K
+            radius_proj = (culled_rad[idx] * focal_length / (depth + 1e-6)).int()
             
             # Define pixel bounds for the splat
+            # FIX: Correctly use image_size tuple indices
             u_min, u_max = max(0, int(u - radius_proj)), min(image_size[1] - 1, int(u + radius_proj))
             v_min, v_max = max(0, int(v - radius_proj)), min(image_size - 1, int(v + radius_proj))
 

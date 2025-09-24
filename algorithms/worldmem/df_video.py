@@ -986,7 +986,19 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
                     )
                     random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
-                #... (other retrieval methods remain the same)...
+                elif self.condition_index_method.lower() == "knn":
+                    random_idx = self._generate_condition_indices_knn(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                elif self.condition_index_method.lower() == "dinov3":
+                    random_idx = self._generate_condition_indices_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
+                    )
+                else :
+                    random_idx = self._generate_condition_indices_mc_fov(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                    
                 
                 # Append retrieved memory latents for conditioning
                 memory_latents = xs_pred[random_idx.squeeze(1), torch.arange(batch_size)].clone()
@@ -1162,9 +1174,23 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
-                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
-                    random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1)
-                #... (other retrieval methods)...
+                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
+                        target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
+                    )
+                    random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                elif self.condition_index_method.lower() == "knn":
+                    random_idx = self._generate_condition_indices_knn(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                elif self.condition_index_method.lower() == "dinov3":
+                    random_idx = self._generate_condition_indices_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
+                    )
+                else :
+                    random_idx = self._generate_condition_indices_mc_fov(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+
 
                 memory_latents = xs_pred[random_idx.squeeze(1), torch.arange(batch_size)].clone()
                 xs_pred_for_diffusion = torch.cat([xs_pred_full, memory_latents], 0)
