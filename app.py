@@ -286,10 +286,28 @@ def set_next_frame_length(next_frame_length, sampling_next_frame_length_state):
     print("set next frame length to", worldmem.next_frame_length)
     return sampling_next_frame_length_state
 
+def reinitialize_worldmem_with_method(condition_index_method):
+    """Reinitialize WorldMemMinecraft with a new condition index method"""
+    global worldmem, cfg
+    
+    # Update the configuration
+    cfg.condition_index_method = condition_index_method
+    
+    # Create a new instance with the updated configuration
+    new_worldmem = WorldMemMinecraft(cfg)
+        
+    return new_worldmem
+
 def set_condition_index_method(condition_index_method, condition_index_method_state):
-    worldmem.condition_index_method = condition_index_method
+    global worldmem
+    
+    print(f"Switching condition index method to: {condition_index_method}")
+    
+    # Reinitialize WorldMemMinecraft with the new method
+    worldmem = reinitialize_worldmem_with_method(condition_index_method)
+    
     condition_index_method_state = condition_index_method
-    print("set condition index method to", worldmem.condition_index_method)
+    print("Reinitialization complete!")
     return condition_index_method_state
 
 def generate(keys, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
