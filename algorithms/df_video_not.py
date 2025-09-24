@@ -1,3 +1,5 @@
+# df_video.py
+
 import os
 import random
 import math
@@ -21,7 +23,9 @@ from .models.vae import VAE_models
 from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
 from .dinov3_feature_extractor import DINOv3FeatureExtractor
+
 from.vggt_memory_retriever import VGGTMemoryRetriever
+
 
 import glob
 
@@ -380,10 +384,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
             self.w_sem = 0.6   # Hyperparameter for semantic score weight
             self.similarity_threshold = 0.95 # For redundancy filtering
 
-        # Initialize VGGT-based geometric memory retrieval if the method is selected
         elif self.condition_index_method.lower() == "vggt_surfel":
             print("Initializing VGGT-based geometric memory retrieval.")
             self.vggt_retriever = VGGTMemoryRetriever(device=self.device)
+
+
 
         
             
@@ -916,9 +921,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
         xs_raw, conditions, pose_conditions, c2w_mat, frame_idx = self._preprocess_batch(batch)
         names = getattr(self, "_current_sample_names", None)
 
-
         # Encode frames in chunks if necessary
-        total_frame = xs_raw.shape[0]
+        total_frame = xs_raw.shape
         if total_frame > 10:
             xs = torch.cat([
                 self.encode(xs_raw[int(total_frame * i / 10):int(total_frame * (i + 1) / 10)]).cpu()
@@ -933,7 +937,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         # Initialize context frames
         n_context_frames = self.context_frames // self.frame_stack
         xs_pred = xs[:n_context_frames].clone()
-
+        
         # --- VGGT WRITE TO MEMORY (Initial Context) ---
         if self.condition_index_method.lower() == "vggt_surfel":
             print("Initializing geometric memory with context frames...")
@@ -943,20 +947,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     xs_raw[i, 0],
                     c2w_mat[i, 0]
                 )
-
+        
         curr_frame += n_context_frames
-
-
 
         # Progress bar for sampling
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
-
-        # list to store the generated latents
-        # NOTE: For our methods, we don't use the latent features of the frames, we use the decoded frames. This is here in case we need to use the latent features.
-        newly_generated_latents_all = []
-
-        # list to store the decoded frames
-        decoded_frames_list = []
+        
+        generated_latents_list = []
 
         while curr_frame < n_frames:
             # Determine the horizon for the current chunk
@@ -967,13 +964,15 @@ class WorldMemMinecraft(DiffusionForcingBase):
             scheduling_matrix = self._generate_scheduling_matrix(horizon)
             chunk = torch.randn((horizon, batch_size, *xs_pred.shape[2:]))
             chunk = torch.clamp(chunk, -self.clip_noise, self.clip_noise).to(xs_pred.device)
+            
+            # Append noise to the prediction tensor for this chunk
             xs_pred = torch.cat([xs_pred, chunk], 0)
 
             # Sliding window: only input the last `n_tokens` frames
             start_frame = max(0, curr_frame + horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + horizon})
 
-            # Handle condition similarity logic
+            # --- READ FROM MEMORY ---
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
                     # Assuming batch size is 1 for validation
@@ -990,12 +989,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
-                else :
+                else: # Fallback to original fov method
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
-
-                xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
+                
+                # Append retrieved ground-truth latents as memory context
+                xs_pred = torch.cat([xs_pred, xs[random_idx[:, range(batch_size)], range(batch_size)].clone()], 0)
 
             # Prepare input conditions and pose conditions
             input_condition, input_pose_condition, frame_idx_list = self._prepare_conditions(
@@ -1004,11 +1004,10 @@ class WorldMemMinecraft(DiffusionForcingBase):
             )
 
             # Perform sampling for each step in the scheduling matrix
-            for m in range(scheduling_matrix.shape[0] - 1):
+            for m in range(scheduling_matrix.shape - 1):
                 from_noise_levels, to_noise_levels = self._prepare_noise_levels(
                     scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
                 )
-
                 xs_pred[start_frame:] = self.diffusion_model.sample_step(
                     xs_pred[start_frame:].to(input_condition.device),
                     input_condition,
@@ -1021,48 +1020,29 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     frame_idx=frame_idx_list
                 ).cpu()
 
-            # Remove condition similarity frames if applicable
             if memory_condition_length:
                 xs_pred = xs_pred[:-memory_condition_length]
 
-            # --- WRITE TO MEMORY (Incremental) ---
+            # Store the newly generated latents before decoding
+            newly_generated_latents = xs_pred[curr_frame:curr_frame + horizon].clone()
+            generated_latents_list.append(newly_generated_latents)
+
+            # --- WRITE TO MEMORY ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                
-                newly_generated_latents = xs_pred[curr_frame : curr_frame + horizon].clone()
-                xs_pred = torch.cat([xs_pred, newly_generated_latents])
-                # append to the list
-                newly_generated_latents_all.append(newly_generated_latents)
-
-                # Decode the newly generated latent frames into images
                 decoded_chunk = self.decode(newly_generated_latents.to(conditions.device))
-
-                # Append the decoded chunk to our list
-                decoded_frames_list.append(decoded_chunk)
                 for i in range(horizon):
                     frame_idx_to_write = curr_frame + i
                     self.vggt_retriever.add_view_to_memory(
-                        decoded_chunk[i, 0],
+                        decoded_chunk[i, 0], # Assuming batch size 1
                         c2w_mat[frame_idx_to_write, 0]
                     )
 
             curr_frame += horizon
             pbar.update(horizon)
 
-
-        newly_generated_latents = torch.cat(newly_generated_latents_all, 0)
-
-        # We concatenate the newly generated latents
-        if self.condition_index_method.lower() == "vggt_surfel":
-
-            xs_pred_decoded = torch.cat(decoded_frames_list, dim=0)
-
-        else:
-            # since we don't use vggt loop, we can directly use the latents from xs_pred
-            newly_generated_latents = xs_pred[n_context_frames:]
-            xs_pred_decoded = self.decode(newly_generated_latents.to(conditions.device)).cpu()
-
-        # Decode predictions and ground truth
-        xs_pred_decoded = self.decode(xs_pred[n_context_frames:].to(conditions.device))
+        # Decode all generated predictions at once for final evaluation
+        all_generated_latents = torch.cat(generated_latents_list, dim=0)
+        xs_pred_decoded = self.decode(all_generated_latents.to(conditions.device))
         xs_decode = self.decode(xs[n_context_frames:].to(conditions.device))
 
         # Store results for evaluation
@@ -1085,22 +1065,21 @@ class WorldMemMinecraft(DiffusionForcingBase):
             
             # Initialize all memory components
             memory_latent_frames = first_frame_encode.cpu()
-
-        
-            # --- VGGT WRITE TO MEMORY (First Frame) ---
-            if self.condition_index_method.lower() == "vggt_surfel":
-                self.vggt_retriever.add_view_to_memory(first_frame, new_c2w_mat)
-            # if we use the dinov3, we need to store the raw frame
-            elif self.condition_index_method.lower() == "dinov3":
-                memory_raw_frames = first_frame[None, None].cpu() # Store the raw frame
-            else:
-                memory_raw_frames = None
-
             memory_actions = new_actions[None, None].to(device)
             memory_poses = first_pose[None, None].to(device)
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
+            # --- FIX: Correctly initialize the frame index tensor for the first frame ---
             memory_frame_idx = torch.tensor([[0]]).to(device)
+
+            # --- VGGT WRITE TO MEMORY (First Frame) ---
+            if self.condition_index_method.lower() == "vggt_surfel":
+                self.vggt_retriever.add_view_to_memory(first_frame, new_c2w_mat)
+
+            if self.condition_index_method.lower() == "dinov3":
+                memory_raw_frames = first_frame[None, None].cpu()
+            else:
+                memory_raw_frames = None
 
             return (first_frame.cpu().numpy(), 
                     memory_latent_frames.cpu().numpy(), 
@@ -1109,13 +1088,10 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     memory_c2w.cpu().numpy(), 
                     memory_frame_idx.cpu().numpy(),
                     memory_raw_frames.cpu().numpy() if memory_raw_frames is not None else None)
-
         else:
             # Load existing memory from numpy arrays
             memory_latent_frames = torch.from_numpy(memory_latent_frames)
-
-            # if we use the dinov3, we need to store the raw frame
-            if self.condition_index_method.lower() == "dinov3":
+            if self.condition_index_method.lower() == "dinov3" and memory_raw_frames is not None:
                 memory_raw_frames = torch.from_numpy(memory_raw_frames)
             else:
                 memory_raw_frames = None
@@ -1126,25 +1102,22 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_frame_idx = torch.from_numpy(memory_frame_idx).to(device)
             new_actions = new_actions.to(device)
 
-
-        curr_frame = 0
         batch_size = 1
-        horizon = self.next_frame_length
-        n_frames = curr_frame + horizon
-        # context
         n_context_frames = len(memory_latent_frames)
-        xs_pred = memory_latent_frames[:n_context_frames].clone()
-        curr_frame += n_context_frames
+        xs_pred = memory_latent_frames.clone()
+        curr_frame = n_context_frames
 
-        pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
+        pbar = tqdm(total=curr_frame + len(new_actions), initial=curr_frame, desc="Sampling")
 
+        # Predict all future poses first
         new_pose_condition_list = []
-        last_frame = xs_pred[-1].clone()
         last_pose_condition = memory_poses[-1].clone()
-        curr_actions = new_actions.clone()
         for hi in range(len(new_actions)):
+            # --- FIX: Use the latent vector directly for pose prediction ---
+            last_frame_for_pose = xs_pred[-1].clone() # This is a latent vector
+            
             last_pose_condition[:,3:] = last_pose_condition[:,3:] // 15
-            new_pose_condition_offset = self.pose_prediction_model(last_frame.to(device), curr_actions[None, hi], last_pose_condition)
+            new_pose_condition_offset = self.pose_prediction_model(last_frame_for_pose.to(device), new_actions[None, hi], last_pose_condition)
             new_pose_condition_offset[:,3:] = torch.round(new_pose_condition_offset[:,3:])
             new_pose_condition = last_pose_condition + new_pose_condition_offset
             new_pose_condition[:,3:] = new_pose_condition[:,3:] * 15
@@ -1154,155 +1127,98 @@ class WorldMemMinecraft(DiffusionForcingBase):
         new_pose_condition_list = torch.cat(new_pose_condition_list, 0)
         
         ai = 0
-
-        # latents list
         newly_generated_latents_all = []
-        decoded_frames_list = []
-
         while ai < len(new_actions):
-            next_horizon = min(horizon, len(new_actions) - ai)
-            last_frame = xs_pred[-1].clone()
-            curr_actions = new_actions[ai:ai+next_horizon].clone()
+            next_horizon = min(self.next_frame_length, len(new_actions) - ai)
+            
+            # Append new poses and actions to memory for this chunk
+            chunk_actions = new_actions[ai:ai+next_horizon].clone()
+            chunk_pose_conditions = new_pose_condition_list[ai:ai+next_horizon].clone()
+            chunk_c2w = euler_to_camera_to_world_matrix(chunk_pose_conditions)
+            
+            temp_poses = torch.cat([memory_poses, chunk_pose_conditions])
+            temp_actions = torch.cat([memory_actions, chunk_actions[:, None]])
+            temp_c2w = torch.cat([memory_c2w, chunk_c2w])
+            new_indices = memory_frame_idx[-1,0] + torch.arange(1, next_horizon + 1, device=memory_frame_idx.device)
+            temp_frame_idx = torch.cat([memory_frame_idx, new_indices.unsqueeze(1)])
 
-            new_pose_condition = new_pose_condition_list[ai:ai+next_horizon].clone()
-
-            new_c2w_mat = euler_to_camera_to_world_matrix(new_pose_condition)
-            memory_poses = torch.cat([memory_poses, new_pose_condition])
-            memory_actions = torch.cat([memory_actions, curr_actions[:, None]])
-            memory_c2w = torch.cat([memory_c2w, new_c2w_mat])
-            new_indices = memory_frame_idx[-1,0] + torch.arange(next_horizon, device=memory_frame_idx.device) + 1
-
-            memory_frame_idx = torch.cat([memory_frame_idx, new_indices[:, None]])
-
-            conditions = memory_actions.clone()
-            pose_conditions = memory_poses.clone()
-            c2w_mat = memory_c2w .clone()
-            frame_idx = memory_frame_idx.clone()
-
-            # generation on frame
-            scheduling_matrix = self._generate_scheduling_matrix(next_horizon)
-            chunk = torch.randn((next_horizon, batch_size, *xs_pred.shape[2:])).to(xs_pred.device)
-            chunk = torch.clamp(chunk, -self.clip_noise, self.clip_noise)
-
-            xs_pred = torch.cat([xs_pred, chunk], 0)
-
-            # sliding window: only input the last n_tokens frames
-            start_frame = max(0, curr_frame - self.n_tokens)
-
-            pbar.set_postfix(
-                {
-                    "start": start_frame,
-                    "end": curr_frame + next_horizon,
-                }
-            )
-
-            # Handle condition similarity logic
+            # --- READ FROM MEMORY ---
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
-                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
+                    target_pose_c2w = temp_c2w[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
                     random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
                 elif self.condition_index_method.lower() == "knn":
-                    print("Using knn for condition index")
-                    random_idx = self._generate_condition_indices_knn(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
-                    )
+                    random_idx = self._generate_condition_indices_knn(curr_frame, memory_condition_length, xs_pred, temp_poses, temp_frame_idx, next_horizon)
                 elif self.condition_index_method.lower() == "dinov3":
-                    print("Using dinov3 for condition index")
-                    random_idx = self._generate_condition_indices_dinov3(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
-                    )
-                else :
-                    print("Using mc_fov for condition index")
-                    random_idx = self._generate_condition_indices_mc_fov(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
-                    )
-                
-                # random_idx = np.unique(random_idx)[:, None]
-                # memory_condition_length = len(random_idx)
-                xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
+                    random_idx = self._generate_condition_indices_dinov3(curr_frame, memory_condition_length, xs_pred, temp_poses, temp_frame_idx, memory_raw_frames, next_horizon)
+                else:
+                    random_idx = self._generate_condition_indices_mc_fov(curr_frame, memory_condition_length, xs_pred, temp_poses, temp_frame_idx, next_horizon)
+            
+            # Prepare for sampling
+            scheduling_matrix = self._generate_scheduling_matrix(next_horizon)
+            chunk_noise = torch.randn((next_horizon, batch_size, *xs_pred.shape[2:])).to(xs_pred.device)
+            chunk_noise = torch.clamp(chunk_noise, -self.clip_noise, self.clip_noise)
+            xs_pred_sampling = torch.cat([xs_pred, chunk_noise], 0)
+            
+            if memory_condition_length:
+                retrieved_latents = memory_latent_frames[random_idx.squeeze(1)].clone()
+                xs_pred_sampling = torch.cat([xs_pred_sampling, retrieved_latents], 0)
 
-            # Prepare input conditions and pose conditions
+            start_frame = max(0, curr_frame + next_horizon - self.n_tokens)
+            
             input_condition, input_pose_condition, frame_idx_list = self._prepare_conditions(
-                start_frame, curr_frame, next_horizon, conditions, pose_conditions, c2w_mat, frame_idx, random_idx,
+                start_frame, curr_frame, next_horizon, temp_actions, temp_poses, temp_c2w, temp_frame_idx, random_idx,
                 image_width=first_frame.shape[-1], image_height=first_frame.shape[-2]
             )
 
-            # Perform sampling for each step in the scheduling matrix
-            for m in range(scheduling_matrix.shape[0] - 1):
-                from_noise_levels, to_noise_levels = self._prepare_noise_levels(
-                    scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
-                )
-
-                xs_pred[start_frame:] = self.diffusion_model.sample_step(
-                    xs_pred[start_frame:].to(input_condition.device),
-                    input_condition,
-                    input_pose_condition,
-                    from_noise_levels[start_frame:],
-                    to_noise_levels[start_frame:],
-                    current_frame=curr_frame,
-                    mode="validation",
-                    reference_length=memory_condition_length,
+            for m in range(scheduling_matrix.shape - 1):
+                from_noise_levels, to_noise_levels = self._prepare_noise_levels(scheduling_matrix, m, curr_frame, batch_size, memory_condition_length)
+                xs_pred_sampling[start_frame:] = self.diffusion_model.sample_step(
+                    xs_pred_sampling[start_frame:].to(device), input_condition, input_pose_condition,
+                    from_noise_levels[start_frame:], to_noise_levels[start_frame:],
+                    current_frame=curr_frame, mode="validation", reference_length=memory_condition_length,
                     frame_idx=frame_idx_list
                 ).cpu()
 
-
             if memory_condition_length:
-                xs_pred = xs_pred[:-memory_condition_length]
+                xs_pred_sampling = xs_pred_sampling[:-memory_condition_length]
 
+            # Update master state with newly generated latents
+            newly_generated_latents = xs_pred_sampling[curr_frame : curr_frame + next_horizon].clone()
+            xs_pred = torch.cat([xs_pred, newly_generated_latents])
+            newly_generated_latents_all.append(newly_generated_latents)
 
             # --- WRITE TO MEMORY (Incremental) ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                #
-                newly_generated_latents = xs_pred[curr_frame : curr_frame + next_horizon].clone()
-                xs_pred = torch.cat([xs_pred, newly_generated_latents])
-                # append to the list
-                newly_generated_latents_all.append(newly_generated_latents)
-
-                # Decode the newly generated latent frames into images
                 decoded_chunk = self.decode(newly_generated_latents.to(device))
-
-                # Append the decoded chunk to our list
-                decoded_frames_list.append(decoded_chunk)
-
                 for i in range(next_horizon):
                     frame_idx_to_write = curr_frame + i
                     self.vggt_retriever.add_view_to_memory(
                         decoded_chunk[i, 0],
-                        c2w_mat[frame_idx_to_write, 0]
+                        temp_c2w[frame_idx_to_write, 0]
                     )
 
+            # Update permanent memory stores for the next chunk in the loop
+            memory_poses = temp_poses
+            memory_actions = temp_actions
+            memory_c2w = temp_c2w
+            memory_frame_idx = temp_frame_idx
 
             curr_frame += next_horizon
             pbar.update(next_horizon)
             ai += next_horizon
 
-        newly_generated_latents = xs_pred[n_context_frames:]
-        
-        # We concatenate the newly generated latents
-        if self.condition_index_method.lower() == "vggt_surfel":
-            # newly_generated_latents = torch.cat(newly_generated_latents_all, 0)
-            xs_pred_decoded = torch.cat(decoded_frames_list, dim=0)
+        # Decode all newly generated latents for the final output video
+        all_new_latents = torch.cat(newly_generated_latents_all, dim=0)
+        xs_pred_decoded = self.decode(all_new_latents.to(device)).cpu()
 
-        else:
-            # since we don't use vggt loop, we can directly use the latents from xs_pred
-            xs_pred_decoded = self.decode(newly_generated_latents.to(device)).cpu()
-
-        # Update the memory banks
-        memory_latent_frames = torch.cat([memory_latent_frames, newly_generated_latents])
-
-        # memory_latent_frames = torch.cat([memory_latent_frames, xs_pred[n_context_frames:]])
-
-        # Update the memory raw frames if we use the dinov3
+        # Update final memory banks
+        memory_latent_frames = xs_pred.clone()
         if self.condition_index_method.lower() == "dinov3":
-            # Keep shape as [T, B, C, H, W]; concatenate along time dimension
-            memory_raw_frames = torch.cat([memory_raw_frames, xs_pred_decoded])
+            memory_raw_frames = torch.cat([memory_raw_frames, xs_pred_decoded]) if memory_raw_frames is not None else xs_pred_decoded
         else:
             memory_raw_frames = None
-
-
-        # memory_latent_frames = torch.cat([memory_latent_frames, xs_pred[n_context_frames:]])
-        # xs_pred = self.decode(xs_pred[n_context_frames:].to(device)).cpu()
 
         return (xs_pred_decoded.cpu().numpy(), 
                 memory_latent_frames.cpu().numpy(), 
