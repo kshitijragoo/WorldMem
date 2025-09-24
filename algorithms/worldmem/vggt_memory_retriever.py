@@ -193,13 +193,13 @@ class VGGTMemoryRetriever:
             u, v = uv[idx]
             depth = depths[idx]
             # FIX: Correctly calculate projected radius using focal length from K matrix
-            focal_length = K
+            focal_length = K[0, 0]  # Extract focal length from intrinsics matrix
             radius_proj = (culled_rad[idx] * focal_length / (depth + 1e-6)).int()
             
             # Define pixel bounds for the splat
             # FIX: Correctly use image_size tuple indices
             u_min, u_max = max(0, int(u - radius_proj)), min(image_size[1] - 1, int(u + radius_proj))
-            v_min, v_max = max(0, int(v - radius_proj)), min(image_size - 1, int(v + radius_proj))
+            v_min, v_max = max(0, int(v - radius_proj)), min(image_size[0] - 1, int(v + radius_proj))
 
             if u_min >= u_max or v_min >= v_max: continue
 

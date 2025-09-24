@@ -1013,7 +1013,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             )
 
             # Perform sampling for each step in the scheduling matrix
-            for m in range(scheduling_matrix.shape - 1):
+            for m in range(scheduling_matrix.shape[0] - 1):
                 from_noise_levels, to_noise_levels = self._prepare_noise_levels(
                     scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
                 )
@@ -1077,7 +1077,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_poses = first_pose[None, None].to(device)
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
-            memory_frame_idx = torch.tensor([]).to(device)
+            memory_frame_idx = torch.tensor([[0]]).to(device)
         
             # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
@@ -1111,7 +1111,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_poses = torch.from_numpy(memory_poses).to(device)
             memory_c2w = torch.from_numpy(memory_c2w).to(device)
             memory_frame_idx = torch.from_numpy(memory_frame_idx).to(device)
-            new_actions = torch.from_numpy(new_actions).to(device)
+            new_actions = new_actions.to(device)  # new_actions is already a tensor from line 1068
 
         curr_frame = 0
         batch_size = 1
@@ -1175,7 +1175,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 if self.condition_index_method.lower() == "vggt_surfel":
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
-                        target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
+                        target_pose_c2w, k=memory_condition_length, image_size=first_frame.shape[-2:]
                     )
                     random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
                 elif self.condition_index_method.lower() == "knn":
@@ -1184,7 +1184,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     )
                 elif self.condition_index_method.lower() == "dinov3":
                     random_idx = self._generate_condition_indices_dinov3(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, horizon
                     )
                 else :
                     random_idx = self._generate_condition_indices_mc_fov(
@@ -1202,7 +1202,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 image_width=first_frame.shape[-1], image_height=first_frame.shape[-2]
             )
 
-            for m in range(scheduling_matrix.shape - 1):
+            for m in range(scheduling_matrix.shape[0] - 1):
                 from_noise_levels, to_noise_levels = self._prepare_noise_levels(
                     scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
                 )
