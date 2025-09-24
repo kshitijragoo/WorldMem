@@ -1199,6 +1199,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # Handle condition similarity logic
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
+                    print("Using vggt_surfel for condition index")
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
                     random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
