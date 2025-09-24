@@ -28,6 +28,10 @@ from.vggt_memory_retriever import VGGTMemoryRetriever
 
 import glob
 
+# Import ThreadPoolExecutor for asynchronous memory updates
+from concurrent.futures import ThreadPoolExecutor
+
+
 # Utility Functions
 def euler_to_rotation_matrix(pitch, yaw):
     """
@@ -387,6 +391,17 @@ class WorldMemMinecraft(DiffusionForcingBase):
         elif self.condition_index_method.lower() == "vggt_surfel":
             print("Initializing VGGT-based geometric memory retrieval.")
             self.vggt_retriever = VGGTMemoryRetriever(device=self.device)
+            # --- ASYNCHRONOUS MEMORY WRITER INITIALIZATION ---
+            # This executor will handle the computationally expensive "Write to Memory" operations
+            # in a separate thread, preventing the main generation loop from blocking.
+            # max_workers=1 ensures that memory updates are processed sequentially to avoid race conditions.
+            self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
+
+    def __del__(self):
+        # --- SHUTDOWN EXECUTOR ---
+        # Ensure the background thread is properly shut down when the object is destroyed.
+        if hasattr(self, 'memory_update_executor'):
+            self.memory_update_executor.shutdown(wait=True)
 
         
             
@@ -937,14 +952,18 @@ class WorldMemMinecraft(DiffusionForcingBase):
         n_context_frames = self.context_frames // self.frame_stack
         xs_pred = xs[:n_context_frames].clone()
 
-        # --- VGGT WRITE TO MEMORY (Initial Context) ---
+        # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (Initial Context) ---
         if self.condition_index_method.lower() == "vggt_surfel":
-            print("Initializing geometric memory with context frames...")
+            print("Asynchronously initializing geometric memory with context frames...")
+            # Assuming batch size is 1 for validation simplicity
             for i in range(n_context_frames):
-                # Assuming batch size is 1 for validation simplicity
-                self.vggt_retriever.add_view_to_memory(
-                    xs_raw[i, 0],
-                    c2w_mat[i, 0]
+                # Submit the memory update task to the background executor.
+                # The.clone() is important to pass a copy of the tensor, preventing potential
+                # race conditions if the main thread modifies the original tensor.
+                self.memory_update_executor.submit(
+                    self.vggt_retriever.add_view_to_memory,
+                    xs_raw[i, 0].clone(),
+                    c2w_mat[i, 0].clone()
                 )
 
         curr_frame += n_context_frames
@@ -970,6 +989,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             scheduling_matrix = self._generate_scheduling_matrix(horizon)
             chunk = torch.randn((horizon, batch_size, *xs_pred.shape[2:]))
             chunk = torch.clamp(chunk, -self.clip_noise, self.clip_noise).to(xs_pred.device)
+
+            # This tensor holds all generated latents so far, plus the new noisy chunk
             xs_pred = torch.cat([xs_pred, chunk], 0)
 
             # Sliding window: only input the last `n_tokens` frames
@@ -977,14 +998,16 @@ class WorldMemMinecraft(DiffusionForcingBase):
             pbar.set_postfix({"start": start_frame, "end": curr_frame + horizon})
 
             # Handle condition similarity logic
+            # --- SYNCHRONOUS READ FROM MEMORY ---
+            # This part must be synchronous as the result is needed for the next generation step.
+            random_idx = None
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
-                    # Assuming batch size is 1 for validation
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
-                        target_pose_c2w, k=memory_condition_length
+                        target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
                     )
-                    random_idx = torch.tensor(retrieved_indices).unsqueeze(1).repeat(1, batch_size)
+                    random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
                 elif self.condition_index_method.lower() == "knn":
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
@@ -998,6 +1021,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
 
+                # Append retrieved memory latents as memory context for conditioning
                 xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
 
             # Prepare input conditions and pose conditions
