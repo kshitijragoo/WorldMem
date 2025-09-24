@@ -23,9 +23,9 @@ class VGGTMemoryRetriever:
         print("VGGT model loaded.")
 
         # Memory stores
-        self.view_database =  # Stores (raw_frame_tensor, c2w_matrix)
+        self.view_database = []  # Stores (raw_frame_tensor, c2w_matrix)
         self.surfels = None      # Dict storing all surfel positions, normals, radii
-        self.surfel_to_views = # List of lists, mapping surfel index to view indices
+        self.surfel_to_views = [] # List of lists, mapping surfel index to view indices
         self.kdtree = None       # KD-Tree for efficient spatial queries.
                                  # NOTE: Research recommends an Octree for better scalability in merging operations.[1]
                                  # A KD-Tree is a valid and efficient alternative for nearest-neighbor searches.
@@ -168,7 +168,7 @@ class VGGTMemoryRetriever:
         if intrinsics is None:
             H, W = image_size
             focal = 1.2 * W
-            K = torch.tensor(, [0, focal, H/2], ], device=self.device)
+            K = torch.tensor([[focal, 0, W/2], [0, focal, H/2], [0, 0, 1]], device=self.device)
         else:
             K = intrinsics.to(self.device)
 
