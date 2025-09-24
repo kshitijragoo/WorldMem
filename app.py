@@ -290,16 +290,23 @@ def reinitialize_worldmem_with_method(condition_index_method):
     """Reinitialize WorldMemMinecraft with a new condition index method"""
     global worldmem, cfg
     
-    # Update the configuration
-    cfg.condition_index_method = condition_index_method
+
+    # Create a deep copy of the configuration to avoid modifying the original
+    new_cfg = OmegaConf.create(OmegaConf.to_container(cfg, resolve=True))
+    
+    # Use open_dict to make the config mutable and update the method
+    with open_dict(new_cfg):
+        new_cfg.condition_index_method = condition_index_method
+    
+    print(f"Updated config condition_index_method to: {new_cfg.condition_index_method}")
     
     # Create a new instance with the updated configuration
-    new_worldmem = WorldMemMinecraft(cfg)
+    new_worldmem = WorldMemMinecraft(new_cfg)
     
-    # Load the same checkpoints
-    load_custom_checkpoint(algo=new_worldmem.diffusion_model, checkpoint_path=cfg.diffusion_path)
-    load_custom_checkpoint(algo=new_worldmem.vae, checkpoint_path=cfg.vae_path)
-    load_custom_checkpoint(algo=new_worldmem.pose_prediction_model, checkpoint_path=cfg.pose_predictor_path)
+    # Load the same checkpoints using the new config
+    load_custom_checkpoint(algo=new_worldmem.diffusion_model, checkpoint_path=new_cfg.diffusion_path)
+    load_custom_checkpoint(algo=new_worldmem.vae, checkpoint_path=new_cfg.vae_path)
+    load_custom_checkpoint(algo=new_worldmem.pose_prediction_model, checkpoint_path=new_cfg.pose_predictor_path)
     
     # Move to device and set to eval mode
     new_worldmem.to("cuda").eval()
