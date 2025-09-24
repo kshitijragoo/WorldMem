@@ -286,6 +286,12 @@ def set_next_frame_length(next_frame_length, sampling_next_frame_length_state):
     print("set next frame length to", worldmem.next_frame_length)
     return sampling_next_frame_length_state
 
+def set_condition_index_method(condition_index_method, condition_index_method_state):
+    worldmem.condition_index_method = condition_index_method
+    condition_index_method_state = condition_index_method
+    print("set condition index method to", worldmem.condition_index_method)
+    return condition_index_method_state
+
 def generate(keys, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
     input_actions = parse_input_to_tensor(keys)
 
@@ -565,11 +571,18 @@ with gr.Blocks(css=css) as demo:
                 label="Next Frame Length",
                 info="How many next frames to generate at once."
             )
+            dropdown_condition_index_method = gr.Dropdown(
+                choices=["fov", "dinov3", "vggt_surfel"],
+                value=worldmem.condition_index_method,
+                label="Condition Index Method",
+                info="Method for selecting memory frames: fov (field of view), dinov3 (semantic similarity), vggt_surfel (geometric retrieval)"
+            )
     
     sampling_timesteps_state = gr.State(worldmem.sampling_timesteps)
     sampling_context_length_state = gr.State(worldmem.n_tokens)
     sampling_memory_condition_length_state = gr.State(worldmem.memory_condition_length)
     sampling_next_frame_length_state = gr.State(worldmem.next_frame_length)
+    condition_index_method_state = gr.State(worldmem.condition_index_method)
 
     video_frames = gr.State(load_image_as_tensor(selected_image.value)[None].numpy())
     memory_latent_frames = gr.State()
@@ -623,5 +636,6 @@ with gr.Blocks(css=css) as demo:
     slider_context_length.change(fn=set_context_length, inputs=[slider_context_length, sampling_context_length_state], outputs=sampling_context_length_state)
     slider_memory_condition_length.change(fn=set_memory_condition_length, inputs=[slider_memory_condition_length, sampling_memory_condition_length_state], outputs=sampling_memory_condition_length_state)
     slider_next_frame_length.change(fn=set_next_frame_length, inputs=[slider_next_frame_length, sampling_next_frame_length_state], outputs=sampling_next_frame_length_state)
+    dropdown_condition_index_method.change(fn=set_condition_index_method, inputs=[dropdown_condition_index_method, condition_index_method_state], outputs=condition_index_method_state)
 
 demo.launch(share=True)
