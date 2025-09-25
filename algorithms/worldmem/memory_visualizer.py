@@ -46,10 +46,19 @@ class VGGTMemoryVisualizer:
             surfel_scale: Scale factor for surfel visualization
             camera_scale: Scale factor for camera frustums
         """
-        if self.memory_retriever.surfels is None:
-            print("No surfels in memory to export.")
-            return
-            
+        # Debug: Print memory retriever state
+        print(f"=== MEMORY RETRIEVER DEBUG ===")
+        print(f"Surfels: {self.memory_retriever.surfels}")
+        print(f"View database length: {len(self.memory_retriever.view_database)}")
+        print(f"Surfel to views length: {len(self.memory_retriever.surfel_to_views)}")
+        
+        if self.memory_retriever.surfels is not None:
+            print(f"Surfel positions shape: {self.memory_retriever.surfels['pos'].shape}")
+            print(f"Surfel normals shape: {self.memory_retriever.surfels['norm'].shape}")
+            print(f"Surfel radii shape: {self.memory_retriever.surfels['rad'].shape}")
+        print(f"==============================")
+        
+        # Always create a scene, even if no surfels
         scene = trimesh.Scene()
         
         # Add coordinate axes for reference
@@ -60,10 +69,34 @@ class VGGTMemoryVisualizer:
         
         # Add surfels as colored shapes
         if include_surfels:
-            surfel_meshes = self._create_surfel_meshes(surfel_scale)
-            for i, mesh in enumerate(surfel_meshes):
-                if hasattr(mesh, 'vertices'):  # Check if it's a proper mesh
-                    scene.add_geometry(mesh, node_name=f"surfel_{i}")
+            if self.memory_retriever.surfels is not None:
+                print(f"Creating surfel meshes for {len(self.memory_retriever.surfels['pos'])} surfels")
+                surfel_meshes = self._create_surfel_meshes(surfel_scale)
+                print(f"Generated {len(surfel_meshes)} surfel meshes")
+                for i, mesh in enumerate(surfel_meshes):
+                    if hasattr(mesh, 'vertices'):  # Check if it's a proper mesh
+                        scene.add_geometry(mesh, node_name=f"surfel_{i}")
+                        print(f"Added surfel mesh {i} with {len(mesh.vertices)} vertices")
+            else:
+                print("No surfels available - creating placeholder points at camera positions")
+                # Create placeholder points at camera positions if no surfels
+                if self.memory_retriever.view_database:
+                    placeholder_points = []
+                    placeholder_colors = []
+                    for i, (_, c2w) in enumerate(self.memory_retriever.view_database):
+                        if isinstance(c2w, torch.Tensor):
+                            pos = c2w[:3, 3].cpu().numpy()
+                        else:
+                            pos = c2w[:3, 3]
+                        placeholder_points.append(pos)
+                        placeholder_colors.append([255, 0, 0])  # Red points
+                    
+                    if placeholder_points:
+                        placeholder_cloud = trimesh.PointCloud(
+                            vertices=np.array(placeholder_points),
+                            colors=np.array(placeholder_colors)
+                        )
+                        scene.add_geometry(placeholder_cloud, node_name="placeholder_points")
         
         # Add camera positions and orientations
         if include_cameras:
@@ -90,6 +123,13 @@ class VGGTMemoryVisualizer:
             if enhanced_surfel_cloud is not None:
                 scene.add_geometry(enhanced_surfel_cloud, node_name="enhanced_surfels")
                 print("Added enhanced surfel point cloud")
+            else:
+                # Last resort: create simple visualization from camera positions
+                print("Creating last resort visualization from camera trajectory")
+                trajectory_viz = self._create_trajectory_visualization()
+                if trajectory_viz is not None:
+                    scene.add_geometry(trajectory_viz, node_name="camera_trajectory")
+                    print("Added camera trajectory visualization")
         
         # Export as GLB
         scene.export(output_path)
@@ -658,6 +698,68 @@ class VGGTMemoryVisualizer:
             
         except Exception as e:
             print(f"Error creating enhanced surfel cloud: {e}")
+            
+        return None
+    
+    def _create_trajectory_visualization(self) -> Optional[trimesh.PointCloud]:
+        """
+        Create a visualization showing the camera trajectory as a connected line with points.
+        """
+        if not self.memory_retriever.view_database:
+            return None
+            
+        try:
+            # Extract camera positions
+            positions = []
+            for _, c2w in self.memory_retriever.view_database:
+                if isinstance(c2w, torch.Tensor):
+                    pos = c2w[:3, 3].cpu().numpy()
+                else:
+                    pos = c2w[:3, 3]
+                positions.append(pos)
+            
+            if len(positions) < 2:
+                return None
+                
+            positions = np.array(positions)
+            
+            # Create points along the trajectory with interpolation for smoother visualization
+            trajectory_points = []
+            trajectory_colors = []
+            
+            # Add original camera positions
+            for i, pos in enumerate(positions):
+                trajectory_points.append(pos)
+                # Color gradient from blue (start) to red (end)
+                t = i / max(1, len(positions) - 1)
+                color = [int(255 * t), int(255 * (1-t)), 100, 255]  # Red to blue gradient
+                trajectory_colors.append(color)
+            
+            # Add interpolated points between cameras for smoother trajectory
+            for i in range(len(positions) - 1):
+                start_pos = positions[i]
+                end_pos = positions[i + 1]
+                
+                # Add 5 intermediate points between each pair of cameras
+                for j in range(1, 6):
+                    t = j / 6.0
+                    interp_pos = start_pos * (1 - t) + end_pos * t
+                    trajectory_points.append(interp_pos)
+                    
+                    # Interpolate color as well
+                    t_global = (i + t) / max(1, len(positions) - 1)
+                    color = [int(255 * t_global), int(255 * (1-t_global)), 150, 255]
+                    trajectory_colors.append(color)
+            
+            if trajectory_points:
+                trajectory_points = np.array(trajectory_points)
+                trajectory_colors = np.array(trajectory_colors)
+                
+                print(f"Created trajectory visualization with {len(trajectory_points)} points")
+                return trimesh.PointCloud(vertices=trajectory_points, colors=trajectory_colors)
+                
+        except Exception as e:
+            print(f"Error creating trajectory visualization: {e}")
             
         return None
     

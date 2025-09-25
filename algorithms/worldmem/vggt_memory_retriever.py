@@ -73,9 +73,20 @@ class VGGTMemoryRetriever:
         # 3. Convert point cloud to surfels [1, 1]
         extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc, (new_h, new_w))
         camera_params = {'extrinsics': extrinsics, 'intrinsics': intrinsics}
+        
+        print(f"DEBUG: Pointcloud shape: {pointcloud.shape}")
+        print(f"DEBUG: Pointcloud min/max: {pointcloud.min():.3f} / {pointcloud.max():.3f}")
+        print(f"DEBUG: Depth min/max: {depth.min():.3f} / {depth.max():.3f}")
+        
         new_positions, new_normals, new_radii = pointcloud_to_surfels(
             pointcloud, camera_params, self.downsample_factor
         )
+        
+        print(f"DEBUG: Generated {len(new_positions)} surfels")
+        print(f"DEBUG: Surfel positions shape: {new_positions.shape}")
+        if len(new_positions) > 0:
+            print(f"DEBUG: Surfel position range: {new_positions.min(dim=0)[0]} to {new_positions.max(dim=0)[0]}")
+            print(f"DEBUG: Surfel radii range: {new_radii.min():.6f} to {new_radii.max():.6f}")
 
         # 4. Merge new surfels into the global index [1, 1]
         if self.surfels is None:
@@ -123,6 +134,14 @@ class VGGTMemoryRetriever:
         if self.surfels and len(self.surfels['pos']) > 0:
             self.kdtree = KDTree(self.surfels['pos'].cpu().numpy())
             print(f"Memory updated. Total surfels: {len(self.surfels['pos'])}")
+            print(f"DEBUG: Final surfel memory state:")
+            print(f"  - Total surfels: {len(self.surfels['pos'])}")
+            print(f"  - Surfel positions shape: {self.surfels['pos'].shape}")
+            print(f"  - Surfel normals shape: {self.surfels['norm'].shape}")
+            print(f"  - Surfel radii shape: {self.surfels['rad'].shape}")
+            print(f"  - Position range: {self.surfels['pos'].min(dim=0)[0]} to {self.surfels['pos'].max(dim=0)[0]}")
+        else:
+            print("DEBUG: No surfels in memory after update!")
 
     @torch.no_grad()
     def retrieve_relevant_views(self, target_c2w, k=4, intrinsics=None, image_size=(256, 256)):
