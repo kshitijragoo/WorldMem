@@ -247,7 +247,8 @@ def get_duration_single_image_to_long_video(first_frame, action, first_pose, dev
 
 @spaces.GPU(duration=get_duration_single_image_to_long_video)
 def run_interactive(first_frame, action, first_pose, device, memory_latent_frames, memory_actions, 
-                            memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
+                            memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, 
+                            enable_memory_viz=False, viz_output_dir="gradio_memory_viz", viz_interval=10):
     new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = worldmem.interactive(first_frame,
                                     action,
                                     first_pose, 
@@ -257,7 +258,10 @@ def run_interactive(first_frame, action, first_pose, device, memory_latent_frame
                                     memory_poses=memory_poses,
                                     memory_c2w=memory_c2w,
                                     memory_frame_idx=memory_frame_idx,
-                                    memory_raw_frames=memory_raw_frames)
+                                    memory_raw_frames=memory_raw_frames,
+                                    enable_memory_viz=enable_memory_viz,
+                                    viz_output_dir=viz_output_dir,
+                                    viz_interval=viz_interval)
 
     return new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
 
@@ -341,8 +345,12 @@ def set_condition_index_method(condition_index_method, condition_index_method_st
     print("Reinitialization complete!")
     return condition_index_method_state
 
-def generate(keys, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
+def generate(keys, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, 
+             enable_memory_viz=False, viz_interval=10):
     input_actions = parse_input_to_tensor(keys)
+    
+    # Create unique visualization directory for this session
+    viz_output_dir = f"gradio_memory_viz_{datetime.now().strftime('%Y%m%d_%H%M%S')}" if enable_memory_viz else "gradio_memory_viz"
 
     if memory_latent_frames is None:
         new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = run_interactive(video_frames[0],
@@ -354,7 +362,10 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
                                     memory_poses=memory_poses,
                                     memory_c2w=memory_c2w,
                                     memory_frame_idx=memory_frame_idx,
-                                    memory_raw_frames=memory_raw_frames)
+                                    memory_raw_frames=memory_raw_frames,
+                                    enable_memory_viz=enable_memory_viz,
+                                    viz_output_dir=viz_output_dir,
+                                    viz_interval=viz_interval)
 
     new_frame, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = run_interactive(video_frames[0],
                                     input_actions,
@@ -365,10 +376,12 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
                                     memory_poses=memory_poses,
                                     memory_c2w=memory_c2w,
                                     memory_frame_idx=memory_frame_idx,
-                                    memory_raw_frames=memory_raw_frames)
+                                    memory_raw_frames=memory_raw_frames,
+                                    enable_memory_viz=enable_memory_viz,
+                                    viz_output_dir=viz_output_dir,
+                                    viz_interval=viz_interval)
 
     video_frames = np.concatenate([video_frames, new_frame[:,0]])
-
 
     out_video = video_frames.transpose(0,2,3,1).copy()
     out_video = np.clip(out_video, a_min=0.0, a_max=1.0)
@@ -385,24 +398,42 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
     save_video(out_video, temporal_video_path)
     input_history += keys
 
+    return last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir
+
+def get_visualization_files(viz_output_dir):
+    """Get available visualization files from the output directory."""
+    if not viz_output_dir or not os.path.exists(viz_output_dir):
+        return [], "No visualization files available"
     
-    # now = datetime.now()
-    # folder_name = now.strftime("%Y-%m-%d_%H-%M-%S")
-    # folder_path = os.path.join("/mnt/xiaozeqi/worldmem/output_material", folder_name)
-    # os.makedirs(folder_path, exist_ok=True)
-    # data_dict = {
-    #     "input_history": input_history,
-    #     "video_frames": video_frames,
-    #     "memory_latent_frames": memory_latent_frames,
-    #     "memory_actions": memory_actions,
-    #     "memory_poses": memory_poses,
-    #     "memory_c2w": memory_c2w,
-    #     "memory_frame_idx": memory_frame_idx,
-    # }
+    glb_files = []
+    for root, dirs, files in os.walk(viz_output_dir):
+        for file in files:
+            if file.endswith('.glb'):
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, viz_output_dir)
+                glb_files.append((rel_path, full_path))
+    
+    if not glb_files:
+        return [], "No GLB files found in visualization directory"
+    
+    return glb_files, f"Found {len(glb_files)} GLB files"
 
-    # np.savez(os.path.join(folder_path, "data_bundle.npz"), **data_dict)
-
-    return last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
+def create_download_zip(viz_output_dir):
+    """Create a zip file containing all visualization files."""
+    if not viz_output_dir or not os.path.exists(viz_output_dir):
+        return None
+    
+    import zipfile
+    zip_path = f"{viz_output_dir}.zip"
+    
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(viz_output_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, viz_output_dir)
+                zipf.write(file_path, arcname)
+    
+    return zip_path
 
 def reset(selected_image):
     memory_latent_frames = None
@@ -423,14 +454,13 @@ def reset(selected_image):
                                 memory_poses=memory_poses,
                                 memory_c2w=memory_c2w,
                                 memory_frame_idx=memory_frame_idx,
-                                memory_raw_frames=memory_raw_frames,
-                                )
+                                memory_raw_frames=memory_raw_frames)
 
-    return input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
+    return input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, ""
 
 def on_image_click(selected_image):
-    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = reset(selected_image)
-    return input_history, selected_image, selected_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames
+    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir = reset(selected_image)
+    return input_history, selected_image, selected_image, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir
 
 def set_memory(examples_case):
     memory_raw_frames = None
@@ -506,6 +536,7 @@ with gr.Blocks(css=css) as demo:
 
         - You can continuously click **"Generate"** to **extend the video** and observe how well the world maintains consistency over time.
         - For best performance, we recommend **running locally** (1s/frame on H100) instead of Spaces (5s/frame).
+        - 🎨 **NEW**: Enable **Memory Visualization** in Advanced Settings to export 3D GLB files showing how the model builds its world representation!
         - ⭐️ If you like this project, please [give it a star on GitHub]()!
         - 💬 For questions or feedback, feel free to open an issue or email me at **zeqixiao1@gmail.com**.
 
@@ -626,6 +657,32 @@ with gr.Blocks(css=css) as demo:
                 label="Condition Index Method",
                 info="Method for selecting memory frames: fov (field of view), dinov3 (semantic similarity), vggt_surfel (geometric retrieval)"
             )
+            
+            # Memory Visualization Settings
+            gr.Markdown("### 🎨 Memory Visualization (VGGT Only)")
+            checkbox_enable_viz = gr.Checkbox(
+                label="Enable Memory Visualization",
+                value=False,
+                info="Export 3D memory representation as GLB files (only works with vggt_surfel method)"
+            )
+            slider_viz_interval = gr.Slider(
+                minimum=1, maximum=50, value=10, step=1,
+                label="Visualization Export Interval",
+                info="Export visualization every N frames (lower = more files, higher detail)"
+            )
+            
+            # Visualization download section
+            gr.Markdown("### 📥 Download Visualization Files")
+            viz_status = gr.Textbox(
+                label="Visualization Status",
+                value="No visualization files available",
+                interactive=False
+            )
+            download_zip_btn = gr.Button("📦 Download All Visualization Files", variant="secondary")
+            download_file = gr.File(
+                label="Visualization Files",
+                visible=False
+            )
     
     sampling_timesteps_state = gr.State(worldmem.sampling_timesteps)
     sampling_context_length_state = gr.State(worldmem.n_tokens)
@@ -640,9 +697,23 @@ with gr.Blocks(css=css) as demo:
     memory_c2w = gr.State()
     memory_frame_idx = gr.State()
     memory_raw_frames = gr.State()
+    viz_output_dir_state = gr.State("")
 
     def set_action(action):
         return action
+    
+    def update_viz_status_and_download(viz_output_dir):
+        """Update visualization status and prepare download."""
+        if not viz_output_dir or not os.path.exists(viz_output_dir):
+            return "No visualization files available", None, gr.update(visible=False)
+        
+        glb_files, status = get_visualization_files(viz_output_dir)
+        
+        if glb_files:
+            zip_path = create_download_zip(viz_output_dir)
+            return status, zip_path, gr.update(visible=True)
+        else:
+            return status, None, gr.update(visible=False)
     
 
 
@@ -668,23 +739,38 @@ with gr.Blocks(css=css) as demo:
 
     submit_button.click(generate, inputs=[input_box, log_output, video_frames, 
                                           memory_latent_frames, memory_actions, memory_poses, 
-                                          memory_c2w, memory_frame_idx, memory_raw_frames], 
+                                          memory_c2w, memory_frame_idx, memory_raw_frames,
+                                          checkbox_enable_viz, slider_viz_interval], 
                                           outputs=[image_display, video_display, log_output, 
                                                     video_frames, memory_latent_frames, memory_actions, memory_poses, 
-                                                    memory_c2w, memory_frame_idx, memory_raw_frames])
+                                                    memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
 
-    reset_btn.click(reset, inputs=[selected_image], outputs=[log_output, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
-    image_display_1.select(lambda: on_image_click(SUNFLOWERS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
-    image_display_2.select(lambda: on_image_click(DESERT_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
-    image_display_3.select(lambda: on_image_click(SAVANNA_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
-    image_display_4.select(lambda: on_image_click(ICE_PLAINS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
-    image_display_5.select(lambda: on_image_click(SUNFLOWERS_RAIN_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
-    image_display_6.select(lambda: on_image_click(PLACE_IMAGE), outputs=[log_output, selected_image,image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames])
+    reset_btn.click(reset, inputs=[selected_image], outputs=[log_output, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+    image_display_1.select(lambda: on_image_click(SUNFLOWERS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+    image_display_2.select(lambda: on_image_click(DESERT_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+    image_display_3.select(lambda: on_image_click(SAVANNA_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+    image_display_4.select(lambda: on_image_click(ICE_PLAINS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+    image_display_5.select(lambda: on_image_click(SUNFLOWERS_RAIN_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+    image_display_6.select(lambda: on_image_click(PLACE_IMAGE), outputs=[log_output, selected_image,image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
 
     slider_denoising_step.change(fn=set_denoising_steps, inputs=[slider_denoising_step, sampling_timesteps_state], outputs=sampling_timesteps_state)
     slider_context_length.change(fn=set_context_length, inputs=[slider_context_length, sampling_context_length_state], outputs=sampling_context_length_state)
     slider_memory_condition_length.change(fn=set_memory_condition_length, inputs=[slider_memory_condition_length, sampling_memory_condition_length_state], outputs=sampling_memory_condition_length_state)
     slider_next_frame_length.change(fn=set_next_frame_length, inputs=[slider_next_frame_length, sampling_next_frame_length_state], outputs=sampling_next_frame_length_state)
     dropdown_condition_index_method.change(fn=set_condition_index_method, inputs=[dropdown_condition_index_method, condition_index_method_state], outputs=condition_index_method_state)
+    
+    # Visualization download functionality
+    download_zip_btn.click(
+        fn=update_viz_status_and_download,
+        inputs=[viz_output_dir_state],
+        outputs=[viz_status, download_file, download_file]
+    )
+    
+    # Update visualization status when viz_output_dir changes
+    viz_output_dir_state.change(
+        fn=lambda viz_dir: get_visualization_files(viz_dir)[1] if viz_dir else "No visualization files available",
+        inputs=[viz_output_dir_state],
+        outputs=[viz_status]
+    )
 
 demo.launch(share=True)

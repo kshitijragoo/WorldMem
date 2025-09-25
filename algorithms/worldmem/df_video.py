@@ -1059,9 +1059,28 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
     @torch.no_grad()
     def interactive(self, first_frame, new_actions, first_pose, device,
-                    memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
-    
+                    memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames,
+                    enable_memory_viz=False, viz_output_dir="interactive_memory_viz", viz_interval=10):
+        """
+        Interactive inference with optional memory visualization.
+        
+        Args:
+            enable_memory_viz: Whether to enable memory visualization exports
+            viz_output_dir: Directory to save visualization files
+            viz_interval: Export visualization every N frames
+        """
         memory_condition_length = self.memory_condition_length
+        
+        # Setup visualization if enabled
+        viz_output_path = None
+        if enable_memory_viz and self.condition_index_method.lower() == "vggt_surfel":
+            from pathlib import Path
+            viz_output_path = Path(viz_output_dir)
+            viz_output_path.mkdir(parents=True, exist_ok=True)
+            print(f"Memory visualization enabled. Output directory: {viz_output_path}")
+        elif enable_memory_viz:
+            print(f"Warning: Memory visualization only supported with VGGT surfel method, but current method is: {self.condition_index_method}")
+            enable_memory_viz = False
 
         if memory_latent_frames is None:
             first_frame = torch.from_numpy(first_frame)
@@ -1086,6 +1105,16 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     first_frame.clone(),
                     new_c2w_mat.clone()
                 )
+                
+                # Export initial memory state if visualization is enabled
+                if enable_memory_viz and viz_output_path is not None:
+                    try:
+                        initial_viz_dir = viz_output_path / "initial_state"
+                        self.vggt_retriever.export_world_visualization(str(initial_viz_dir))
+                        print(f"Initial memory state exported to: {initial_viz_dir}")
+                    except Exception as e:
+                        print(f"Warning: Could not export initial memory visualization: {e}")
+                        
             elif self.condition_index_method.lower() == "dinov3":
                 memory_raw_frames = first_frame[None, None].cpu()
             else:
@@ -1234,6 +1263,24 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+                
+                # Export memory visualization periodically
+                if enable_memory_viz and viz_output_path is not None and ai % viz_interval == 0:
+                    try:
+                        step_viz_dir = viz_output_path / f"step_{ai:04d}"
+                        self.vggt_retriever.export_world_visualization(str(step_viz_dir))
+                        print(f"Memory visualization exported at step {ai} to: {step_viz_dir}")
+                        
+                        # Also visualize retrieval for the current pose
+                        current_c2w = c2w_mat[curr_frame - 1, 0].clone()  # Last generated frame's pose
+                        retrieval_viz_path = step_viz_dir / "retrieval_visualization.glb"
+                        self.vggt_retriever.visualize_retrieval(
+                            current_c2w, k=memory_condition_length, output_path=str(retrieval_viz_path)
+                        )
+                        print(f"Retrieval visualization saved to: {retrieval_viz_path}")
+                        
+                    except Exception as e:
+                        print(f"Warning: Could not export memory visualization at step {ai}: {e}")
 
             curr_frame += next_horizon
             pbar.update(next_horizon)
@@ -1242,6 +1289,42 @@ class WorldMemMinecraft(DiffusionForcingBase):
         # Final processing after the loop
         final_generated_latents = torch.cat(newly_generated_latents_all, 0)
         xs_pred_decoded = self.decode(final_generated_latents.to(device)).cpu()
+
+        # Export final memory state if visualization is enabled
+        if enable_memory_viz and viz_output_path is not None and self.condition_index_method.lower() == "vggt_surfel":
+            try:
+                final_viz_dir = viz_output_path / "final_state"
+                self.vggt_retriever.export_world_visualization(str(final_viz_dir))
+                print(f"Final memory state exported to: {final_viz_dir}")
+                
+                # Create a comprehensive summary visualization showing the full trajectory
+                if len(memory_c2w) > 1:
+                    # Visualize retrieval for the final pose
+                    final_c2w = memory_c2w[-1, 0].clone()
+                    final_retrieval_path = final_viz_dir / "final_retrieval.glb"
+                    retrieval_info = self.vggt_retriever.visualize_retrieval(
+                        final_c2w, k=memory_condition_length, output_path=str(final_retrieval_path)
+                    )
+                    print(f"Final retrieval visualization saved to: {final_retrieval_path}")
+                    
+                    # Save trajectory summary
+                    import json
+                    trajectory_summary = {
+                        "total_frames_generated": len(new_actions),
+                        "total_memory_views": len(self.vggt_retriever.view_database),
+                        "total_surfels": len(self.vggt_retriever.surfels['pos']) if self.vggt_retriever.surfels else 0,
+                        "final_retrieval_info": retrieval_info,
+                        "visualization_interval": viz_interval,
+                        "condition_index_method": self.condition_index_method
+                    }
+                    
+                    summary_path = final_viz_dir / "session_summary.json"
+                    with open(summary_path, 'w') as f:
+                        json.dump(trajectory_summary, f, indent=2, default=str)
+                    print(f"Session summary saved to: {summary_path}")
+                    
+            except Exception as e:
+                print(f"Warning: Could not export final memory visualization: {e}")
 
         # Update the memory banks for the next interactive step
         memory_latent_frames = xs_pred.cpu()
