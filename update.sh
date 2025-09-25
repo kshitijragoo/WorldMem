@@ -34,3 +34,6 @@ echo "✅ Update complete!"
 # --- NEW LINES ADDED BELOW ---
 echo "↩️  Returning to worldmem directory..."
 cd worldmem
+
+git checkout memory_viz
+git pull
