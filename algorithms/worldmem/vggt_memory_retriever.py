@@ -254,3 +254,34 @@ class VGGTMemoryRetriever:
         
         print(f"Retrieved indices: {selected_indices}")
         return selected_indices
+    
+    def export_world_visualization(self, output_dir: str = "memory_viz"):
+        """
+        Export the current world representation for visualization.
+        
+        Args:
+            output_dir: Directory to save visualization files
+        """
+        try:
+            from .memory_visualizer import export_memory_visualization
+            return export_memory_visualization(self, output_dir)
+        except ImportError:
+            print("Warning: trimesh not available. Install with: pip install trimesh")
+            return None
+    
+    def visualize_retrieval(self, target_c2w: torch.Tensor, k: int = 4, output_path: str = None):
+        """
+        Visualize which views would be retrieved for a given target pose.
+        
+        Args:
+            target_c2w: Target camera-to-world matrix
+            k: Number of views to retrieve
+            output_path: Optional path to save visualization
+        """
+        try:
+            from .memory_visualizer import VGGTMemoryVisualizer
+            visualizer = VGGTMemoryVisualizer(self)
+            return visualizer.visualize_retrieval_for_pose(target_c2w, k, output_path)
+        except ImportError:
+            print("Warning: trimesh not available. Install with: pip install trimesh")
+            return None

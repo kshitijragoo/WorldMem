@@ -27,3 +27,4 @@ timm
 gradio
 spaces
 transformers
+trimesh[easy]
