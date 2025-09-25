@@ -398,7 +398,12 @@ def generate(keys, input_history, video_frames, memory_latent_frames, memory_act
     save_video(out_video, temporal_video_path)
     input_history += keys
 
-    return last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir
+    # Update visualization status
+    viz_status_text = "No visualization files available"
+    if enable_memory_viz and viz_output_dir and os.path.exists(viz_output_dir):
+        _, viz_status_text = get_visualization_files(viz_output_dir)
+    
+    return last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir, viz_status_text
 
 def get_visualization_files(viz_output_dir):
     """Get available visualization files from the output directory."""
@@ -580,7 +585,7 @@ with gr.Blocks(css=css) as demo:
             image_display = gr.Image(value=selected_image.value, interactive=False, label="Current Frame")
         with gr.Column():
             gr.Markdown("🎞️ Generated videos. New contents are marked in red box.")
-            video_display = gr.Video(autoplay=True, loop=True)
+            video_display = gr.Video(autoplay=True)
 
     gr.Markdown("### 🏞️ Choose a scene and start generation.")
 
@@ -743,7 +748,7 @@ with gr.Blocks(css=css) as demo:
                                           checkbox_enable_viz, slider_viz_interval], 
                                           outputs=[image_display, video_display, log_output, 
                                                     video_frames, memory_latent_frames, memory_actions, memory_poses, 
-                                                    memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
+                                                    memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state, viz_status])
 
     reset_btn.click(reset, inputs=[selected_image], outputs=[log_output, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
     image_display_1.select(lambda: on_image_click(SUNFLOWERS_IMAGE), outputs=[log_output, selected_image, image_display, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames, viz_output_dir_state])
@@ -764,13 +769,6 @@ with gr.Blocks(css=css) as demo:
         fn=update_viz_status_and_download,
         inputs=[viz_output_dir_state],
         outputs=[viz_status, download_file, download_file]
-    )
-    
-    # Update visualization status when viz_output_dir changes
-    viz_output_dir_state.change(
-        fn=lambda viz_dir: get_visualization_files(viz_dir)[1] if viz_dir else "No visualization files available",
-        inputs=[viz_output_dir_state],
-        outputs=[viz_status]
     )
 
 demo.launch(share=True)
