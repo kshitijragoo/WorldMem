@@ -13,6 +13,7 @@ from pathlib import Path
 import json
 from typing import Optional, Dict, List, Tuple
 import colorsys
+import matplotlib
 
 
 class VGGTMemoryVisualizer:
@@ -77,6 +78,18 @@ class VGGTMemoryVisualizer:
                 'total_cameras': len(self.memory_retriever.view_database),
                 'scene_bounds': self._get_scene_bounds()
             }
+        
+        # Add VGGT-style point cloud reconstruction if available
+        point_cloud_mesh = self._create_vggt_style_reconstruction()
+        if point_cloud_mesh is not None:
+            scene.add_geometry(point_cloud_mesh, node_name="vggt_reconstruction")
+            print("Added VGGT-style point cloud reconstruction")
+        else:
+            # Fallback: create enhanced surfel visualization
+            enhanced_surfel_cloud = self._create_enhanced_surfel_cloud()
+            if enhanced_surfel_cloud is not None:
+                scene.add_geometry(enhanced_surfel_cloud, node_name="enhanced_surfels")
+                print("Added enhanced surfel point cloud")
         
         # Export as GLB
         scene.export(output_path)
@@ -432,6 +445,221 @@ class VGGTMemoryVisualizer:
         colors_uint8 = (colors * 255).astype(np.uint8)
         
         return colors_uint8
+    
+    def _create_vggt_style_reconstruction(self) -> Optional[trimesh.PointCloud]:
+        """
+        Create a VGGT-style point cloud reconstruction from the stored view database.
+        This attempts to reconstruct the actual world geometry from the stored frames and poses.
+        """
+        if not self.memory_retriever.view_database or not hasattr(self.memory_retriever, 'vggt_model'):
+            return None
+            
+        print("Creating VGGT-style reconstruction from stored views...")
+        
+        try:
+            # Collect all stored frames and poses
+            stored_frames = []
+            stored_poses = []
+            
+            for frame_tensor, c2w_matrix in self.memory_retriever.view_database:
+                # Convert frame to numpy if needed
+                if isinstance(frame_tensor, torch.Tensor):
+                    frame = frame_tensor.cpu().numpy()
+                else:
+                    frame = frame_tensor
+                    
+                # Convert pose to numpy if needed  
+                if isinstance(c2w_matrix, torch.Tensor):
+                    pose = c2w_matrix.cpu().numpy()
+                else:
+                    pose = c2w_matrix
+                
+                stored_frames.append(frame)
+                stored_poses.append(pose)
+            
+            if not stored_frames:
+                return None
+                
+            # Convert to numpy arrays
+            frames_array = np.array(stored_frames)  # Shape: (N, C, H, W)
+            poses_array = np.array(stored_poses)    # Shape: (N, 4, 4)
+            
+            # Use VGGT to get depth and 3D points for stored frames
+            world_points_all = []
+            colors_all = []
+            
+            for i, (frame, c2w) in enumerate(zip(frames_array, poses_array)):
+                try:
+                    # Prepare frame for VGGT (ensure correct format)
+                    if frame.shape[0] == 3:  # CHW format
+                        frame_input = torch.from_numpy(frame).unsqueeze(0).to(self.memory_retriever.device)
+                    else:  # Already in batch format
+                        frame_input = torch.from_numpy(frame[None]).to(self.memory_retriever.device)
+                    
+                    # Get VGGT predictions
+                    with torch.amp.autocast(device_type='cuda', dtype=self.memory_retriever.dtype):
+                        predictions = self.memory_retriever.vggt_model(frame_input)
+                    
+                    depth = predictions["depth"].cpu().numpy()
+                    pose_enc = predictions["pose_enc"].cpu().numpy()
+                    
+                    # Convert pose encoding to camera matrices
+                    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+                    extrinsics, intrinsics = pose_encoding_to_extri_intri(
+                        torch.from_numpy(pose_enc), 
+                        (frame.shape[-2], frame.shape[-1])
+                    )
+                    
+                    # Unproject depth to world coordinates
+                    world_points = self._unproject_depth_to_world_points(
+                        depth[0], extrinsics[0].numpy(), intrinsics[0].numpy()
+                    )
+                    
+                    # Get frame colors
+                    if frame.shape[0] == 3:  # CHW format
+                        frame_colors = frame.transpose(1, 2, 0)  # Convert to HWC
+                    else:
+                        frame_colors = frame
+                    
+                    # Flatten points and colors
+                    points_flat = world_points.reshape(-1, 3)
+                    colors_flat = frame_colors.reshape(-1, 3)
+                    
+                    # Filter out invalid points (depth <= 0)
+                    depth_flat = depth[0].flatten()
+                    valid_mask = depth_flat > 0.01  # Minimum depth threshold
+                    
+                    if valid_mask.any():
+                        world_points_all.append(points_flat[valid_mask])
+                        colors_all.append((colors_flat[valid_mask] * 255).astype(np.uint8))
+                    
+                except Exception as e:
+                    print(f"Error processing frame {i}: {e}")
+                    continue
+            
+            if not world_points_all:
+                print("No valid 3D points generated")
+                return None
+            
+            # Combine all points and colors
+            all_points = np.vstack(world_points_all)
+            all_colors = np.vstack(colors_all)
+            
+            # Apply confidence-based filtering (keep top 80% of points by some quality metric)
+            # For now, we'll use a simple distance-based filter
+            if len(all_points) > 10000:  # Subsample if too many points
+                center = np.mean(all_points, axis=0)
+                distances = np.linalg.norm(all_points - center, axis=1)
+                distance_threshold = np.percentile(distances, 90)  # Keep 90% of points
+                keep_mask = distances <= distance_threshold
+                all_points = all_points[keep_mask]
+                all_colors = all_colors[keep_mask]
+            
+            print(f"Created point cloud with {len(all_points)} points")
+            
+            # Create trimesh PointCloud
+            point_cloud = trimesh.PointCloud(vertices=all_points, colors=all_colors)
+            return point_cloud
+            
+        except Exception as e:
+            print(f"Error creating VGGT-style reconstruction: {e}")
+            return None
+    
+    def _unproject_depth_to_world_points(self, depth_map: np.ndarray, 
+                                       extrinsics: np.ndarray, 
+                                       intrinsics: np.ndarray) -> np.ndarray:
+        """
+        Unproject a depth map to 3D world coordinates using camera parameters.
+        """
+        H, W = depth_map.shape
+        
+        # Create pixel coordinate grid
+        u, v = np.meshgrid(np.arange(W), np.arange(H))
+        
+        # Get intrinsic parameters
+        fx, fy = intrinsics[0, 0], intrinsics[1, 1]
+        cx, cy = intrinsics[0, 2], intrinsics[1, 2]
+        
+        # Unproject to camera coordinates
+        x_cam = (u - cx) * depth_map / fx
+        y_cam = (v - cy) * depth_map / fy
+        z_cam = depth_map
+        
+        # Stack to form camera coordinates
+        cam_coords = np.stack([x_cam, y_cam, z_cam], axis=-1)  # Shape: (H, W, 3)
+        
+        # Convert to homogeneous coordinates
+        ones = np.ones((H, W, 1))
+        cam_coords_homo = np.concatenate([cam_coords, ones], axis=-1)  # Shape: (H, W, 4)
+        
+        # Transform to world coordinates using inverse extrinsics
+        # extrinsics is world-to-camera, so we need camera-to-world
+        extrinsics_4x4 = np.eye(4)
+        extrinsics_4x4[:3, :4] = extrinsics
+        
+        # Compute camera-to-world transformation
+        cam_to_world = np.linalg.inv(extrinsics_4x4)
+        
+        # Apply transformation
+        world_coords = np.dot(cam_coords_homo, cam_to_world.T)
+        
+        return world_coords[:, :, :3]  # Return only XYZ coordinates
+    
+    def _create_enhanced_surfel_cloud(self) -> Optional[trimesh.PointCloud]:
+        """
+        Create an enhanced point cloud from surfel data with better density and colors.
+        """
+        if self.memory_retriever.surfels is None:
+            return None
+            
+        try:
+            positions = self.memory_retriever.surfels['pos'].cpu().numpy()
+            normals = self.memory_retriever.surfels['norm'].cpu().numpy()
+            radii = self.memory_retriever.surfels['rad'].cpu().numpy()
+            
+            # Generate multiple points per surfel to create denser point cloud
+            enhanced_points = []
+            enhanced_colors = []
+            
+            surfel_colors = self._generate_surfel_colors()
+            
+            for i in range(len(positions)):
+                pos = positions[i]
+                normal = normals[i]
+                radius = radii[i]
+                color = surfel_colors[i]
+                
+                # Create multiple points around each surfel position
+                # Number of points based on radius (larger surfels get more points)
+                num_points = max(1, min(10, int(radius * 100)))  # 1-10 points per surfel
+                
+                if num_points == 1:
+                    enhanced_points.append(pos)
+                    enhanced_colors.append(color)
+                else:
+                    # Create points in a small sphere around the surfel
+                    for _ in range(num_points):
+                        # Random offset within the surfel radius
+                        offset = np.random.randn(3) * radius * 0.5
+                        # Project offset perpendicular to normal to stay on surface
+                        if np.linalg.norm(normal) > 0:
+                            normal_unit = normal / np.linalg.norm(normal)
+                            offset = offset - np.dot(offset, normal_unit) * normal_unit
+                        
+                        enhanced_points.append(pos + offset)
+                        enhanced_colors.append(color)
+            
+            if enhanced_points:
+                enhanced_points = np.array(enhanced_points)
+                enhanced_colors = np.array(enhanced_colors)
+                
+                print(f"Created enhanced surfel cloud with {len(enhanced_points)} points")
+                return trimesh.PointCloud(vertices=enhanced_points, colors=enhanced_colors)
+            
+        except Exception as e:
+            print(f"Error creating enhanced surfel cloud: {e}")
+            
+        return None
     
     def _compute_surfel_statistics(self) -> Dict:
         """Compute statistics about surfels."""
