@@ -33,7 +33,8 @@ class VGGTMemoryVisualizer:
                            include_cameras: bool = True,
                            include_surfels: bool = True,
                            surfel_scale: float = 1.0,
-                           camera_scale: float = 0.5) -> None:
+                           camera_scale: float = 0.5,
+                           include_axes: bool = True) -> None:
         """
         Export the current world representation as a GLB file.
         
@@ -50,11 +51,18 @@ class VGGTMemoryVisualizer:
             
         scene = trimesh.Scene()
         
-        # Add surfels as colored spheres
+        # Add coordinate axes for reference
+        if include_axes:
+            axes_meshes = self._create_coordinate_axes()
+            for i, mesh in enumerate(axes_meshes):
+                scene.add_geometry(mesh, node_name=f"axis_{i}")
+        
+        # Add surfels as colored shapes
         if include_surfels:
             surfel_meshes = self._create_surfel_meshes(surfel_scale)
             for i, mesh in enumerate(surfel_meshes):
-                scene.add_geometry(mesh, node_name=f"surfel_{i}")
+                if hasattr(mesh, 'vertices'):  # Check if it's a proper mesh
+                    scene.add_geometry(mesh, node_name=f"surfel_{i}")
         
         # Add camera positions and orientations
         if include_cameras:
@@ -62,9 +70,18 @@ class VGGTMemoryVisualizer:
             for i, mesh in enumerate(camera_meshes):
                 scene.add_geometry(mesh, node_name=f"camera_{i}")
         
+        # Add scene statistics as a text note in the GLB metadata
+        if self.memory_retriever.surfels is not None:
+            scene.metadata = {
+                'total_surfels': len(self.memory_retriever.surfels['pos']),
+                'total_cameras': len(self.memory_retriever.view_database),
+                'scene_bounds': self._get_scene_bounds()
+            }
+        
         # Export as GLB
         scene.export(output_path)
         print(f"World representation exported to: {output_path}")
+        print(f"Scene contains {len(scene.geometry)} objects")
         
     def export_world_as_ply(self, output_path: str) -> None:
         """
@@ -178,7 +195,7 @@ class VGGTMemoryVisualizer:
         }
     
     def _create_surfel_meshes(self, scale: float = 1.0, alpha: float = 1.0) -> List[trimesh.Trimesh]:
-        """Create mesh representations of surfels."""
+        """Create mesh representations of surfels with better visualization."""
         positions = self.memory_retriever.surfels['pos'].cpu().numpy()
         normals = self.memory_retriever.surfels['norm'].cpu().numpy()
         radii = self.memory_retriever.surfels['rad'].cpu().numpy()
@@ -186,27 +203,50 @@ class VGGTMemoryVisualizer:
         colors = self._generate_surfel_colors(alpha=alpha)
         
         meshes = []
+        
+        # Create a single point cloud instead of individual spheres for better performance
+        if len(positions) > 1000:
+            # For large numbers of surfels, use a point cloud approach
+            point_cloud = trimesh.PointCloud(
+                vertices=positions,
+                colors=colors[:, :3]  # RGB only
+            )
+            return [point_cloud]
+        
+        # For smaller numbers, create oriented discs instead of spheres
         for i in range(len(positions)):
-            # Create a small sphere for each surfel
-            sphere = trimesh.creation.icosphere(radius=radii[i] * scale, subdivisions=1)
-            sphere.apply_translation(positions[i])
-            
-            # Align with normal (optional, for visualization of orientation)
+            # Create a small disc oriented along the normal
             if np.linalg.norm(normals[i]) > 0:
-                # Create rotation matrix to align with normal
+                # Create a disc (flattened cylinder)
+                disc = trimesh.creation.cylinder(
+                    radius=max(radii[i] * scale, 0.01), 
+                    height=max(radii[i] * scale * 0.1, 0.001),
+                    sections=8
+                )
+                
+                # Orient the disc along the normal
                 normal = normals[i] / np.linalg.norm(normals[i])
                 z_axis = np.array([0, 0, 1])
+                
                 if not np.allclose(normal, z_axis):
                     rotation_axis = np.cross(z_axis, normal)
-                    rotation_angle = np.arccos(np.dot(z_axis, normal))
-                    rotation_matrix = trimesh.transformations.rotation_matrix(
-                        rotation_angle, rotation_axis
-                    )
-                    sphere.apply_transform(rotation_matrix)
-            
-            # Apply color
-            sphere.visual.face_colors = colors[i]
-            meshes.append(sphere)
+                    if np.linalg.norm(rotation_axis) > 1e-6:
+                        rotation_axis = rotation_axis / np.linalg.norm(rotation_axis)
+                        rotation_angle = np.arccos(np.clip(np.dot(z_axis, normal), -1, 1))
+                        rotation_matrix = trimesh.transformations.rotation_matrix(
+                            rotation_angle, rotation_axis
+                        )
+                        disc.apply_transform(rotation_matrix)
+                
+                disc.apply_translation(positions[i])
+                disc.visual.face_colors = colors[i]
+                meshes.append(disc)
+            else:
+                # Fallback to small sphere if normal is zero
+                sphere = trimesh.creation.icosphere(radius=max(radii[i] * scale, 0.01), subdivisions=1)
+                sphere.apply_translation(positions[i])
+                sphere.visual.face_colors = colors[i]
+                meshes.append(sphere)
             
         return meshes
     
@@ -225,67 +265,173 @@ class VGGTMemoryVisualizer:
         return meshes
     
     def _create_camera_mesh(self, c2w: torch.Tensor, color: List[float], scale: float = 1.0) -> trimesh.Trimesh:
-        """Create a single camera frustum mesh."""
+        """Create a single camera frustum mesh with better visibility."""
         # Convert to numpy if needed
         if isinstance(c2w, torch.Tensor):
             c2w = c2w.cpu().numpy()
         
-        # Create a simple camera frustum
-        # Camera center
+        # Create a more visible camera representation
         center = c2w[:3, 3]
         
-        # Camera coordinate system
-        right = c2w[:3, 0] * scale * 0.1
-        up = c2w[:3, 1] * scale * 0.1
-        forward = -c2w[:3, 2] * scale * 0.2  # Negative Z is forward in camera coords
+        # Camera coordinate system (make it larger and more visible)
+        right = c2w[:3, 0] * scale * 0.3
+        up = c2w[:3, 1] * scale * 0.3
+        forward = -c2w[:3, 2] * scale * 0.5  # Negative Z is forward in camera coords
         
-        # Define frustum vertices
-        vertices = np.array([
+        # Create a camera body (small box at center)
+        body_size = scale * 0.05
+        body_vertices = np.array([
+            center + np.array([-body_size, -body_size, -body_size]),
+            center + np.array([body_size, -body_size, -body_size]),
+            center + np.array([body_size, body_size, -body_size]),
+            center + np.array([-body_size, body_size, -body_size]),
+            center + np.array([-body_size, -body_size, body_size]),
+            center + np.array([body_size, -body_size, body_size]),
+            center + np.array([body_size, body_size, body_size]),
+            center + np.array([-body_size, body_size, body_size]),
+        ])
+        
+        # Create frustum vertices
+        frustum_vertices = np.array([
             center,  # Camera center
-            center + forward + right + up,    # Top-right-far
-            center + forward - right + up,    # Top-left-far
-            center + forward - right - up,    # Bottom-left-far
-            center + forward + right - up,    # Bottom-right-far
+            center + forward + right * 0.5 + up * 0.5,    # Top-right-far
+            center + forward - right * 0.5 + up * 0.5,    # Top-left-far
+            center + forward - right * 0.5 - up * 0.5,    # Bottom-left-far
+            center + forward + right * 0.5 - up * 0.5,    # Bottom-right-far
         ])
         
-        # Define faces (triangles)
-        faces = np.array([
-            [0, 1, 2],  # Top face
-            [0, 2, 3],  # Left face
-            [0, 3, 4],  # Bottom face
-            [0, 4, 1],  # Right face
-            [1, 2, 3],  # Far face (triangle 1)
-            [1, 3, 4],  # Far face (triangle 2)
+        # Combine all vertices
+        all_vertices = np.vstack([body_vertices, frustum_vertices])
+        
+        # Define faces for the camera body (cube)
+        body_faces = np.array([
+            [0, 1, 2], [0, 2, 3],  # Front face
+            [4, 7, 6], [4, 6, 5],  # Back face
+            [0, 4, 5], [0, 5, 1],  # Bottom face
+            [2, 6, 7], [2, 7, 3],  # Top face
+            [0, 3, 7], [0, 7, 4],  # Left face
+            [1, 5, 6], [1, 6, 2],  # Right face
         ])
         
-        mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-        mesh.visual.face_colors = color
+        # Define faces for the frustum (offset indices by 8 for body vertices)
+        frustum_faces = np.array([
+            [8, 9, 10],   # Top face
+            [8, 10, 11],  # Left face
+            [8, 11, 12],  # Bottom face
+            [8, 12, 9],   # Right face
+            [9, 10, 11],  # Far face (triangle 1)
+            [9, 11, 12],  # Far face (triangle 2)
+        ])
+        
+        # Combine all faces
+        all_faces = np.vstack([body_faces, frustum_faces])
+        
+        mesh = trimesh.Trimesh(vertices=all_vertices, faces=all_faces)
+        
+        # Set colors - make camera body slightly different from frustum
+        body_color = np.array(color)
+        frustum_color = body_color * 0.7  # Darker frustum
+        
+        # Create face colors
+        face_colors = np.zeros((len(all_faces), 4))
+        face_colors[:len(body_faces)] = body_color  # Body faces
+        face_colors[len(body_faces):] = frustum_color  # Frustum faces
+        
+        mesh.visual.face_colors = face_colors
         
         return mesh
     
+    def _create_coordinate_axes(self, scale: float = 1.0) -> List[trimesh.Trimesh]:
+        """Create coordinate axes for reference."""
+        axes = []
+        
+        # X-axis (Red)
+        x_axis = trimesh.creation.cylinder(radius=0.02 * scale, height=2.0 * scale)
+        x_axis.apply_transform(trimesh.transformations.rotation_matrix(np.pi/2, [0, 1, 0]))
+        x_axis.apply_translation([1.0 * scale, 0, 0])
+        x_axis.visual.face_colors = [255, 0, 0, 255]  # Red
+        axes.append(x_axis)
+        
+        # Y-axis (Green)
+        y_axis = trimesh.creation.cylinder(radius=0.02 * scale, height=2.0 * scale)
+        y_axis.apply_transform(trimesh.transformations.rotation_matrix(np.pi/2, [1, 0, 0]))
+        y_axis.apply_translation([0, 1.0 * scale, 0])
+        y_axis.visual.face_colors = [0, 255, 0, 255]  # Green
+        axes.append(y_axis)
+        
+        # Z-axis (Blue)
+        z_axis = trimesh.creation.cylinder(radius=0.02 * scale, height=2.0 * scale)
+        z_axis.apply_translation([0, 0, 1.0 * scale])
+        z_axis.visual.face_colors = [0, 0, 255, 255]  # Blue
+        axes.append(z_axis)
+        
+        # Origin sphere
+        origin = trimesh.creation.icosphere(radius=0.05 * scale)
+        origin.visual.face_colors = [255, 255, 255, 255]  # White
+        axes.append(origin)
+        
+        return axes
+    
+    def _get_scene_bounds(self) -> dict:
+        """Get the bounding box of the scene."""
+        if self.memory_retriever.surfels is None:
+            return {}
+        
+        positions = self.memory_retriever.surfels['pos'].cpu().numpy()
+        
+        # Get camera positions too
+        camera_positions = []
+        for _, c2w in self.memory_retriever.view_database:
+            if isinstance(c2w, torch.Tensor):
+                camera_positions.append(c2w[:3, 3].cpu().numpy())
+            else:
+                camera_positions.append(c2w[:3, 3])
+        
+        if camera_positions:
+            all_positions = np.vstack([positions, np.array(camera_positions)])
+        else:
+            all_positions = positions
+        
+        return {
+            'min': all_positions.min(axis=0).tolist(),
+            'max': all_positions.max(axis=0).tolist(),
+            'center': all_positions.mean(axis=0).tolist(),
+            'extent': (all_positions.max(axis=0) - all_positions.min(axis=0)).tolist()
+        }
+    
     def _generate_surfel_colors(self, alpha: float = 1.0) -> np.ndarray:
-        """Generate colors for surfels based on their view associations."""
+        """Generate colors for surfels based on their view associations and quality."""
         num_surfels = len(self.memory_retriever.surfels['pos'])
         colors = np.zeros((num_surfels, 4))
         
+        # Get view count statistics for better color mapping
+        view_counts = [len(self.memory_retriever.surfel_to_views[i]) for i in range(num_surfels)]
+        max_views = max(view_counts) if view_counts else 1
+        
         for i in range(num_surfels):
-            # Color based on number of associated views
             num_views = len(self.memory_retriever.surfel_to_views[i])
             
+            # Create a more nuanced color scheme
             if num_views == 1:
-                # Single view: Red
-                colors[i] = [1, 0, 0, alpha]
+                # Single view: Bright red (uncertain)
+                colors[i] = [1.0, 0.2, 0.2, alpha]
             elif num_views == 2:
-                # Two views: Orange
-                colors[i] = [1, 0.5, 0, alpha]
+                # Two views: Orange (low confidence)
+                colors[i] = [1.0, 0.6, 0.0, alpha]
             elif num_views <= 4:
-                # Few views: Yellow
-                colors[i] = [1, 1, 0, alpha]
+                # Few views: Yellow-green (moderate confidence)
+                colors[i] = [0.8, 1.0, 0.2, alpha]
+            elif num_views <= 6:
+                # Good views: Green (high confidence)
+                colors[i] = [0.2, 1.0, 0.2, alpha]
             else:
-                # Many views: Green
-                colors[i] = [0, 1, 0, alpha]
+                # Many views: Blue-green (very high confidence)
+                colors[i] = [0.0, 0.8, 1.0, alpha]
         
-        return (colors * 255).astype(np.uint8)
+        # Convert to 0-255 range for trimesh
+        colors_uint8 = (colors * 255).astype(np.uint8)
+        
+        return colors_uint8
     
     def _compute_surfel_statistics(self) -> Dict:
         """Compute statistics about surfels."""
