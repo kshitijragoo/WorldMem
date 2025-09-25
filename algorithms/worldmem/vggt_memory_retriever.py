@@ -42,6 +42,9 @@ class VGGTMemoryRetriever:
         self.view_database.append((new_frame_tensor.cpu(), new_c2w_matrix.cpu()))
         
         print(f"Adding view {frame_index} to geometric memory...")
+        print(f"DEBUG: Frame tensor shape: {new_frame_tensor.shape}")
+        print(f"DEBUG: C2W matrix shape: {new_c2w_matrix.shape}")
+        print(f"DEBUG: View database now has {len(self.view_database)} views")
         
         # 1. Geometry Acquisition via VGGT [1, 1]
         image_size_hw = new_frame_tensor.shape[-2:]
