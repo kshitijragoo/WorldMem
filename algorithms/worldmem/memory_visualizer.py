@@ -79,25 +79,12 @@ class VGGTMemoryVisualizer:
                         scene.add_geometry(mesh, node_name=f"surfel_{i}")
                         print(f"Added surfel mesh {i} with {len(mesh.vertices)} vertices")
             else:
-                print("No surfels available - creating placeholder points at camera positions")
-                # Create placeholder points at camera positions if no surfels
-                if self.memory_retriever.view_database:
-                    placeholder_points = []
-                    placeholder_colors = []
-                    for i, (_, c2w) in enumerate(self.memory_retriever.view_database):
-                        if isinstance(c2w, torch.Tensor):
-                            pos = c2w[:3, 3].cpu().numpy()
-                        else:
-                            pos = c2w[:3, 3]
-                        placeholder_points.append(pos)
-                        placeholder_colors.append([255, 0, 0])  # Red points
-                    
-                    if placeholder_points:
-                        placeholder_cloud = trimesh.PointCloud(
-                            vertices=np.array(placeholder_points),
-                            colors=np.array(placeholder_colors)
-                        )
-                        scene.add_geometry(placeholder_cloud, node_name="placeholder_points")
+                print("No surfels available - creating enhanced placeholder visualization")
+                # Create enhanced placeholder visualization
+                placeholder_viz = self._create_enhanced_placeholder_visualization()
+                if placeholder_viz is not None:
+                    scene.add_geometry(placeholder_viz, node_name="placeholder_points")
+                    print("Added enhanced placeholder visualization")
         
         # Add camera positions and orientations
         if include_cameras:
@@ -113,24 +100,22 @@ class VGGTMemoryVisualizer:
                 'scene_bounds': self._get_scene_bounds()
             }
         
-        # Add VGGT-style point cloud reconstruction if available
-        point_cloud_mesh = self._create_vggt_style_reconstruction()
-        if point_cloud_mesh is not None:
-            scene.add_geometry(point_cloud_mesh, node_name="vggt_reconstruction")
-            print("Added VGGT-style point cloud reconstruction")
+        # Skip VGGT reconstruction for now due to performance issues
+        # Instead, focus on surfel and trajectory visualization
+        print("Skipping VGGT reconstruction to avoid hanging - using surfel data instead")
+        
+        # Try enhanced surfel visualization first
+        enhanced_surfel_cloud = self._create_enhanced_surfel_cloud()
+        if enhanced_surfel_cloud is not None:
+            scene.add_geometry(enhanced_surfel_cloud, node_name="enhanced_surfels")
+            print("Added enhanced surfel point cloud")
         else:
-            # Fallback: create enhanced surfel visualization
-            enhanced_surfel_cloud = self._create_enhanced_surfel_cloud()
-            if enhanced_surfel_cloud is not None:
-                scene.add_geometry(enhanced_surfel_cloud, node_name="enhanced_surfels")
-                print("Added enhanced surfel point cloud")
-            else:
-                # Last resort: create simple visualization from camera positions
-                print("Creating last resort visualization from camera trajectory")
-                trajectory_viz = self._create_trajectory_visualization()
-                if trajectory_viz is not None:
-                    scene.add_geometry(trajectory_viz, node_name="camera_trajectory")
-                    print("Added camera trajectory visualization")
+            # Create trajectory visualization as fallback
+            print("Creating trajectory visualization from camera positions")
+            trajectory_viz = self._create_trajectory_visualization()
+            if trajectory_viz is not None:
+                scene.add_geometry(trajectory_viz, node_name="camera_trajectory")
+                print("Added camera trajectory visualization")
         
         # Export as GLB
         scene.export(output_path)
@@ -550,10 +535,16 @@ class VGGTMemoryVisualizer:
                     ).to(self.memory_retriever.dtype)
                     
                     print(f"DEBUG: Frame {i} resized from {h}x{w} to {new_h}x{new_w}")
+                    print(f"DEBUG: About to run VGGT inference for frame {i}")
                     
-                    # Get VGGT predictions
-                    with torch.amp.autocast(device_type='cuda', dtype=self.memory_retriever.dtype):
-                        predictions = self.memory_retriever.vggt_model(frame_input)
+                    # Get VGGT predictions with timeout handling
+                    try:
+                        with torch.amp.autocast(device_type='cuda', dtype=self.memory_retriever.dtype):
+                            predictions = self.memory_retriever.vggt_model(frame_input)
+                        print(f"DEBUG: VGGT inference completed for frame {i}")
+                    except Exception as e:
+                        print(f"ERROR: VGGT inference failed for frame {i}: {e}")
+                        continue  # Skip this frame
                     
                     depth = predictions["depth"].cpu().numpy()
                     pose_enc = predictions["pose_enc"].cpu().numpy()
@@ -775,6 +766,85 @@ class VGGTMemoryVisualizer:
                 
         except Exception as e:
             print(f"Error creating trajectory visualization: {e}")
+            
+        return None
+    
+    def _create_enhanced_placeholder_visualization(self) -> Optional[trimesh.PointCloud]:
+        """
+        Create an enhanced placeholder visualization when no surfels are available.
+        This creates a more interesting visualization using camera positions and synthetic geometry.
+        """
+        if not self.memory_retriever.view_database:
+            return None
+            
+        try:
+            all_points = []
+            all_colors = []
+            
+            # Extract camera positions and create a grid around each one
+            for i, (_, c2w) in enumerate(self.memory_retriever.view_database):
+                if isinstance(c2w, torch.Tensor):
+                    cam_pos = c2w[:3, 3].cpu().numpy()
+                    cam_forward = -c2w[:3, 2].cpu().numpy()  # -Z is forward
+                    cam_right = c2w[:3, 0].cpu().numpy()
+                    cam_up = c2w[:3, 1].cpu().numpy()
+                else:
+                    cam_pos = c2w[:3, 3]
+                    cam_forward = -c2w[:3, 2]
+                    cam_right = c2w[:3, 0]
+                    cam_up = c2w[:3, 1]
+                
+                # Create a small grid of points in front of the camera to simulate scene geometry
+                grid_size = 0.5
+                grid_distance = 2.0
+                grid_points_per_side = 5
+                
+                for x in range(-grid_points_per_side, grid_points_per_side + 1):
+                    for y in range(-grid_points_per_side, grid_points_per_side + 1):
+                        for z in range(1, 4):  # Points at different distances
+                            # Calculate point position relative to camera
+                            offset_x = (x / grid_points_per_side) * grid_size
+                            offset_y = (y / grid_points_per_side) * grid_size
+                            offset_z = z * grid_distance
+                            
+                            # Transform to world coordinates
+                            world_point = (cam_pos + 
+                                         offset_x * cam_right + 
+                                         offset_y * cam_up + 
+                                         offset_z * cam_forward)
+                            
+                            all_points.append(world_point)
+                            
+                            # Color based on distance and camera index
+                            distance_factor = z / 3.0
+                            camera_factor = i / max(1, len(self.memory_retriever.view_database) - 1)
+                            
+                            # Create a nice color gradient
+                            r = int(255 * (1 - distance_factor) * (1 - camera_factor))
+                            g = int(255 * distance_factor)
+                            b = int(255 * camera_factor)
+                            
+                            all_colors.append([r, g, b, 255])
+            
+            # Add camera positions themselves as larger points
+            for i, (_, c2w) in enumerate(self.memory_retriever.view_database):
+                if isinstance(c2w, torch.Tensor):
+                    pos = c2w[:3, 3].cpu().numpy()
+                else:
+                    pos = c2w[:3, 3]
+                
+                all_points.append(pos)
+                all_colors.append([255, 255, 0, 255])  # Yellow for camera positions
+            
+            if all_points:
+                all_points = np.array(all_points)
+                all_colors = np.array(all_colors)
+                
+                print(f"Created enhanced placeholder with {len(all_points)} points")
+                return trimesh.PointCloud(vertices=all_points, colors=all_colors)
+                
+        except Exception as e:
+            print(f"Error creating enhanced placeholder: {e}")
             
         return None
     

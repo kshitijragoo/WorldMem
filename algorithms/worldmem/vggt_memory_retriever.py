@@ -72,14 +72,37 @@ class VGGTMemoryRetriever:
         vggt_input = resized_frame.to(self.device, dtype=self.dtype)
         
         # FIX: Updated to use the recommended torch.amp.autocast syntax
-        with torch.amp.autocast(device_type='cuda', dtype=self.dtype):
-            predictions = self.vggt_model(vggt_input)
+        print(f"DEBUG: About to run VGGT inference on shape {vggt_input.shape}")
+        try:
+            with torch.amp.autocast(device_type='cuda', dtype=self.dtype):
+                predictions = self.vggt_model(vggt_input)
+            print(f"DEBUG: VGGT inference completed successfully")
+        except Exception as e:
+            print(f"ERROR: VGGT inference failed: {e}")
+            return  # Skip this frame if VGGT fails
 
         depth = predictions["depth"]
         pose_enc = predictions["pose_enc"]
 
+        print(f"DEBUG: Depth shape: {depth.shape}, min/max: {depth.min():.6f}/{depth.max():.6f}")
+        print(f"DEBUG: Pose encoding shape: {pose_enc.shape}")
+        
+        # Check if depth is valid
+        valid_depth_pixels = (depth > 0.01).sum().item()
+        total_pixels = depth.numel()
+        print(f"DEBUG: Valid depth pixels: {valid_depth_pixels}/{total_pixels} ({100*valid_depth_pixels/total_pixels:.1f}%)")
+        
+        if valid_depth_pixels == 0:
+            print("WARNING: No valid depth pixels found, skipping frame")
+            return
+
         # 2. Unproject depth to get accurate point cloud [1, 1]
-        pointcloud = unproject_depth_to_pointcloud(depth, pose_enc, (new_h, new_w))
+        try:
+            pointcloud = unproject_depth_to_pointcloud(depth, pose_enc, (new_h, new_w))
+            print(f"DEBUG: Pointcloud unprojection successful")
+        except Exception as e:
+            print(f"ERROR: Pointcloud unprojection failed: {e}")
+            return
         
         # 3. Convert point cloud to surfels [1, 1]
         extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc, (new_h, new_w))
