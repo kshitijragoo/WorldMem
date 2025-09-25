@@ -8,6 +8,7 @@ and debugging purposes.
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import trimesh
 from pathlib import Path
 import json
@@ -530,11 +531,25 @@ class VGGTMemoryVisualizer:
             
             for i, (frame, c2w) in enumerate(zip(frames_array, poses_array)):
                 try:
-                    # Prepare frame for VGGT (ensure correct format)
+                    # Prepare frame for VGGT (ensure correct format and size)
                     if frame.shape[0] == 3:  # CHW format
-                        frame_input = torch.from_numpy(frame).unsqueeze(0).to(self.memory_retriever.device)
-                    else:  # Already in batch format
-                        frame_input = torch.from_numpy(frame[None]).to(self.memory_retriever.device)
+                        frame_tensor = torch.from_numpy(frame).to(self.memory_retriever.device)
+                    else:  # HWC format, need to transpose
+                        frame_tensor = torch.from_numpy(frame).permute(2, 0, 1).to(self.memory_retriever.device)
+                    
+                    # Resize to VGGT-compatible dimensions (multiple of 14)
+                    h, w = frame_tensor.shape[-2:]
+                    new_h = ((h + 13) // 14) * 14
+                    new_w = ((w + 13) // 14) * 14
+                    
+                    frame_input = F.interpolate(
+                        frame_tensor.unsqueeze(0), 
+                        size=(new_h, new_w), 
+                        mode='bilinear', 
+                        align_corners=False
+                    ).to(self.memory_retriever.dtype)
+                    
+                    print(f"DEBUG: Frame {i} resized from {h}x{w} to {new_h}x{new_w}")
                     
                     # Get VGGT predictions
                     with torch.amp.autocast(device_type='cuda', dtype=self.memory_retriever.dtype):

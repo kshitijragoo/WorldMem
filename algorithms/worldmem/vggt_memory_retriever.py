@@ -51,12 +51,23 @@ class VGGTMemoryRetriever:
         new_h = ((h + 13) // 14) * 14
         new_w = ((w + 13) // 14) * 14
         
+        print(f"DEBUG: Original image size: {h}x{w}")
+        print(f"DEBUG: Resizing to VGGT-compatible size: {new_h}x{new_w}")
+        
+        # Ensure we have the right tensor format for interpolation
+        if new_frame_tensor.dim() == 3:  # CHW
+            frame_for_resize = new_frame_tensor.unsqueeze(0)  # Add batch dimension
+        else:  # Already has batch dimension
+            frame_for_resize = new_frame_tensor
+            
         resized_frame = F.interpolate(
-            new_frame_tensor.unsqueeze(0), 
+            frame_for_resize, 
             size=(new_h, new_w), 
             mode='bilinear', 
             align_corners=False
         )
+        
+        print(f"DEBUG: Resized frame shape: {resized_frame.shape}")
             
         vggt_input = resized_frame.to(self.device, dtype=self.dtype)
         
