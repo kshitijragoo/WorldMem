@@ -27,7 +27,7 @@ import argparse
 import tempfile
 import shutil
 from copy import deepcopy
-from add_ckpt_path import add_path_to_dust3r
+from .add_ckpt_path import add_path_to_dust3r
 import imageio.v2 as iio
 
 # Set random seed for reproducibility.
