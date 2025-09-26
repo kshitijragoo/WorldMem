@@ -31,4 +31,6 @@ trimesh[easy]
 
 
 
--e ./extern/CUT3R/src/croco/models/curope
+# -e ./extern/CUT3R/src/croco/models/curope
+
+# mamba run -n worldmem pip install -e ./extern/CUT3R/src/croco/models/curope
