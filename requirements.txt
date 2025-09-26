@@ -28,3 +28,7 @@ gradio
 spaces
 transformers
 trimesh[easy]
+
+
+
+-e ./extern/CUT3R/src/croco/models/curope
