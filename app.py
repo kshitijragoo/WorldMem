@@ -621,10 +621,10 @@ with gr.Blocks(css=css) as demo:
                 info="How many next frames to generate at once."
             )
             dropdown_condition_index_method = gr.Dropdown(
-                choices=["fov", "dinov3", "vggt_surfel"],
+                choices=["fov", "dinov3", "vggt_surfel", "surfel"],
                 value=worldmem.condition_index_method,
                 label="Condition Index Method",
-                info="Method for selecting memory frames: fov (field of view), dinov3 (semantic similarity), vggt_surfel (geometric retrieval)"
+                info="Method for selecting memory frames: fov (field of view), dinov3 (semantic similarity), vggt_surfel (geometric retrieval), surfel (geometric retrieval)"
             )
     
     sampling_timesteps_state = gr.State(worldmem.sampling_timesteps)
