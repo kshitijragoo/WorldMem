@@ -25,6 +25,7 @@ from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
 from .dinov3_feature_extractor import DINOv3FeatureExtractor
 from.vggt_memory_retriever import VGGTMemoryRetriever
+from.surfel_memory_retriever import SurfelMemoryRetriever
 
 import glob
 
@@ -395,6 +396,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # This executor will handle the computationally expensive "Write to Memory" operations
             # in a separate thread, preventing the main generation loop from blocking.
             # max_workers=1 ensures that memory updates are processed sequentially to avoid race conditions.
+            self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
+        
+        # Initialize Surfel-based memory retrieval using CUT3R (VMem approach)
+        elif self.condition_index_method.lower() == "surfel":
+            print("Initializing Surfel-based memory retrieval using CUT3R (VMem approach).")
+            self.surfel_retriever = SurfelMemoryRetriever(device=self.device)
+            # Asynchronous memory writer for surfel updates
             self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
 
     def __del__(self):
@@ -955,6 +963,18 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     xs_raw[i, 0].clone(),
                     c2w_mat[i, 0].clone()
                 )
+        
+        # --- ASYNCHRONOUS SURFEL WRITE TO MEMORY (Initial Context) ---
+        elif self.condition_index_method.lower() == "surfel":
+            print("Asynchronously initializing surfel-based memory with context frames...")
+            # Assuming batch size is 1 for validation simplicity
+            for i in range(n_context_frames):
+                # Submit the memory update task to the background executor.
+                self.memory_update_executor.submit(
+                    self.surfel_retriever.add_view_to_memory,
+                    xs_raw[i, 0].clone(),
+                    c2w_mat[i, 0].clone()
+                )
 
         curr_frame = n_context_frames
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
@@ -983,6 +1003,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 if self.condition_index_method.lower() == "vggt_surfel":
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
+                        target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
+                    )
+                    random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                elif self.condition_index_method.lower() == "surfel":
+                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
+                    retrieved_indices = self.surfel_retriever.retrieve_relevant_views(
                         target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
                     )
                     random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
@@ -1045,6 +1071,17 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+            elif self.condition_index_method.lower() == "surfel":
+                # Decode only the newly generated chunk for memory writing
+                decoded_chunk = self.decode(newly_generated_latents.to(self.device))
+                for i in range(horizon):
+                    frame_idx_to_write = curr_frame + i
+                    # Asynchronously update surfel-based memory
+                    self.memory_update_executor.submit(
+                        self.surfel_retriever.add_view_to_memory,
+                        decoded_chunk[i, 0].clone(),
+                        c2w_mat[frame_idx_to_write, 0].clone()
+                    )
 
             curr_frame += horizon
             pbar.update(horizon)
@@ -1083,6 +1120,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if self.condition_index_method.lower() == "vggt_surfel":
                 self.memory_update_executor.submit(
                     self.vggt_retriever.add_view_to_memory,
+                    first_frame.clone(),
+                    new_c2w_mat.clone()
+                )
+            elif self.condition_index_method.lower() == "surfel":
+                self.memory_update_executor.submit(
+                    self.surfel_retriever.add_view_to_memory,
                     first_frame.clone(),
                     new_c2w_mat.clone()
                 )
@@ -1177,6 +1220,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
                     random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
+                elif self.condition_index_method.lower() == "surfel":
+                    print("Using surfel for condition index")
+                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
+                    retrieved_indices = self.surfel_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
+                    random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
                 elif self.condition_index_method.lower() == "knn":
                     print("Using knn for condition index")
                     random_idx = self._generate_condition_indices_knn(
@@ -1231,6 +1279,15 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     frame_idx_to_write = curr_frame + i
                     self.memory_update_executor.submit(
                         self.vggt_retriever.add_view_to_memory,
+                        decoded_chunk[i, 0].clone(),
+                        c2w_mat[frame_idx_to_write, 0].clone()
+                    )
+            elif self.condition_index_method.lower() == "surfel":
+                decoded_chunk = self.decode(newly_generated_latents.to(device))
+                for i in range(next_horizon):
+                    frame_idx_to_write = curr_frame + i
+                    self.memory_update_executor.submit(
+                        self.surfel_retriever.add_view_to_memory,
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
