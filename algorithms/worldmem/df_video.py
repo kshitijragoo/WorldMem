@@ -24,12 +24,11 @@ from .models.vae import VAE_models
 from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
 from .dinov3_feature_extractor import DINOv3FeatureExtractor
-from.vggt_memory_retriever import VGGTMemoryRetriever
+
+# new imports for the VMem integrations
+from .memory_adapter import VMemAdapter, convert_worldmem_pose_to_vmem, convert_worldmem_image_to_vmem
 
 import glob
-
-# Import ThreadPoolExecutor for asynchronous memory updates
-from concurrent.futures import ThreadPoolExecutor
 
 
 # Utility Functions
@@ -387,35 +386,16 @@ class WorldMemMinecraft(DiffusionForcingBase):
             self.w_sem = 0.6   # Hyperparameter for semantic score weight
             self.similarity_threshold = 0.95 # For redundancy filtering
 
-        # Initialize VGGT-based geometric memory retrieval if the method is selected
+        # Initialize VMem-based surfel memory system
         elif self.condition_index_method.lower() == "vggt_surfel":
-            print("Initializing VGGT-based geometric memory retrieval.")
-            self.vggt_retriever = VGGTMemoryRetriever(device=self.device)
-            # --- ASYNCHRONOUS MEMORY WRITER INITIALIZATION ---
-            # This executor will handle the computationally expensive "Write to Memory" operations
-            # in a separate thread, preventing the main generation loop from blocking.
-            # max_workers=1 ensures that memory updates are processed sequentially to avoid race conditions.
-            self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
-            # Keep track of pending memory update futures for synchronization
-            self.pending_memory_futures = []
+            print("Initializing VMem surfel-based memory system.")
+            self.vmem_adapter = VMemAdapter(device=self.device)
+            # VMem handles memory updates internally, no need for separate executor
 
     def _wait_for_memory_updates(self):
         """Wait for all pending memory updates to complete."""
-        if hasattr(self, 'pending_memory_futures'):
-            # Wait for all pending futures to complete
-            for future in self.pending_memory_futures:
-                try:
-                    future.result()  # This will block until the future completes
-                except Exception as e:
-                    print(f"Warning: Memory update failed: {e}")
-            # Clear the list after all updates are complete
-            self.pending_memory_futures.clear()
-
-    def __del__(self):
-        # --- SHUTDOWN EXECUTOR ---
-        # Ensure the background thread is properly shut down when the object is destroyed.
-        if hasattr(self, 'memory_update_executor'):
-            self.memory_update_executor.shutdown(wait=True)
+        # VMem handles memory updates internally, no waiting needed
+        pass
 
         
             
@@ -956,20 +936,19 @@ class WorldMemMinecraft(DiffusionForcingBase):
         n_context_frames = self.context_frames // self.frame_stack
         xs_pred = xs[:n_context_frames].clone()
 
-        # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (Initial Context) ---
+        # --- INITIALIZE VMEM WITH CONTEXT FRAMES ---
         if self.condition_index_method.lower() == "vggt_surfel":
-            print("Asynchronously initializing geometric memory with context frames...")
-            # Assuming batch size is 1 for validation simplicity
-            for i in range(n_context_frames):
-                # Submit the memory update task to the background executor.
-                # The.clone() is important to pass a copy of the tensor, preventing potential
-                # race conditions if the main thread modifies the original tensor.
-                future = self.memory_update_executor.submit(
-                    self.vggt_retriever.add_view_to_memory,
-                    xs_raw[i, 0].clone(),
-                    c2w_mat[i, 0].clone()
-                )
-                self.pending_memory_futures.append(future)
+            print("Initializing VMem with context frames...")
+            # Initialize with the first frame
+            first_frame = convert_worldmem_image_to_vmem(xs_raw[0, 0])
+            first_pose = convert_worldmem_pose_to_vmem(c2w_mat[0, 0])
+            self.vmem_adapter.initialize_with_frame(first_frame, first_pose)
+            
+            # Add remaining context frames if any
+            if n_context_frames > 1:
+                context_poses = [convert_worldmem_pose_to_vmem(c2w_mat[i, 0]) for i in range(1, n_context_frames)]
+                context_Ks = [self.vmem_adapter.pipeline.Ks[0]] * (n_context_frames - 1)  # Use same intrinsics
+                self.vmem_adapter.generate_trajectory_frames(context_poses, context_Ks)
 
         curr_frame = n_context_frames
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
@@ -991,21 +970,22 @@ class WorldMemMinecraft(DiffusionForcingBase):
             start_frame = max(0, curr_frame + horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + horizon})
 
-            # --- WAIT FOR MEMORY UPDATES TO COMPLETE ---
-            # Ensure all pending memory updates are completed before reading from memory
-            if self.condition_index_method.lower() == "vggt_surfel":
-                self._wait_for_memory_updates()
-
-            # --- SYNCHRONOUS READ FROM MEMORY ---
-            # This part must be synchronous as the result is needed for the next generation step.
+            # --- READ FROM VMEM MEMORY ---
             random_idx = None
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
-                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
-                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
-                        target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
-                    )
-                    random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                    # Get target poses for memory retrieval
+                    target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(horizon)]
+                    context_info = self.vmem_adapter.get_context_info(target_poses)
+                    
+                    # Extract context indices from VMem
+                    if 'context_time_indices' in context_info:
+                        context_indices = context_info['context_time_indices'].cpu().numpy()
+                        random_idx = torch.tensor(context_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                    else:
+                        # Fallback to recent frames if no context available
+                        recent_indices = list(range(max(0, curr_frame - memory_condition_length), curr_frame))
+                        random_idx = torch.tensor(recent_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
                 elif self.condition_index_method.lower() == "knn":
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
@@ -1052,28 +1032,19 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # Append the new latents to the persistent prediction tensor
             xs_pred = torch.cat([xs_pred, newly_generated_latents], 0)
 
-            # --- ASYNCHRONOUS WRITE TO MEMORY (Incremental) ---
+            # --- WRITE TO VMEM MEMORY (Incremental) ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                # Decode only the newly generated chunk for memory writing
-                decoded_chunk = self.decode(newly_generated_latents.to(self.device))
-                for i in range(horizon):
-                    frame_idx_to_write = curr_frame + i
-                    # NOTE: This is now an asynchronous call. It submits the task to the background
-                    # thread and the main loop continues immediately without waiting.
-                    future = self.memory_update_executor.submit(
-                        self.vggt_retriever.add_view_to_memory,
-                        decoded_chunk[i, 0].clone(),
-                        c2w_mat[frame_idx_to_write, 0].clone()
-                    )
-                    self.pending_memory_futures.append(future)
+                # Generate trajectory frames using VMem for the newly generated poses
+                new_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(horizon)]
+                new_Ks = [self.vmem_adapter.pipeline.Ks[0]] * horizon  # Use same intrinsics
+                
+                # VMem will handle the memory updates internally during generation
+                self.vmem_adapter.generate_trajectory_frames(new_poses, new_Ks)
 
             curr_frame += horizon
             pbar.update(horizon)
 
-        # --- WAIT FOR FINAL MEMORY UPDATES TO COMPLETE ---
-        # Ensure all pending memory updates are completed before ending validation
-        if self.condition_index_method.lower() == "vggt_surfel":
-            self._wait_for_memory_updates()
+        # VMem handles memory updates internally, no waiting needed
 
         # Decode final predictions and ground truth for evaluation
         xs_pred_decoded = self.decode(xs_pred[n_context_frames:].to(self.device)).cpu()
@@ -1105,14 +1076,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_c2w = new_c2w_mat[None, None].to(device)
             memory_frame_idx = torch.tensor([[0]]).to(device)
         
-            # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
+            # --- INITIALIZE VMEM WITH FIRST FRAME ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                future = self.memory_update_executor.submit(
-                    self.vggt_retriever.add_view_to_memory,
-                    first_frame.clone(),
-                    new_c2w_mat.clone()
-                )
-                self.pending_memory_futures.append(future)
+                first_frame_converted = convert_worldmem_image_to_vmem(first_frame)
+                print(f"First frame converted: {first_frame_converted.shape}")
+                first_pose_converted = convert_worldmem_pose_to_vmem(new_c2w_mat)
+                print(f"First pose converted: {first_pose_converted.shape}")
+                self.vmem_adapter.initialize_with_frame(first_frame_converted, first_pose_converted)
+                print("VMem initialized with first frame")
             elif self.condition_index_method.lower() == "dinov3":
                 memory_raw_frames = first_frame[None, None].cpu()
             else:
@@ -1196,19 +1167,33 @@ class WorldMemMinecraft(DiffusionForcingBase):
             start_frame = max(0, curr_frame + next_horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + next_horizon})
 
-            # --- WAIT FOR MEMORY UPDATES TO COMPLETE ---
-            # Ensure all pending memory updates are completed before reading from memory
-            if self.condition_index_method.lower() == "vggt_surfel":
-                self._wait_for_memory_updates()
-
-            # Handle condition similarity logic
+            # Handle condition similarity logic using VMem
             random_idx = None
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
-                    print("Using vggt_surfel for condition index")
-                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
-                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
-                    random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
+                    print("Using VMem for condition index")
+                    target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame, 0])]
+                    print(f"Target poses: {target_poses}")
+                    
+                    context_info = self.vmem_adapter.get_context_info(target_poses)
+                    print(f"Context info: {context_info}")
+
+                    if 'context_time_indices' in context_info:
+                        print("Context indices found")
+                        context_indices = context_info['context_time_indices'].cpu().numpy()
+                        random_idx = torch.tensor(context_indices).unsqueeze(1)
+                        print(f"Context indices: {context_indices}")
+                        print(f"Random idx: {random_idx}")
+                    else:
+                        print("No context indices found, falling back to recent frames")
+                        # Fallback to recent frames
+                        recent_indices = list(range(max(0, curr_frame - memory_condition_length), curr_frame))
+                        random_idx = torch.tensor(recent_indices).unsqueeze(1)
+
+                        print(f"Recent indices: {recent_indices}")
+                        print(f"Random idx: {random_idx}")
+
+                    
                 elif self.condition_index_method.lower() == "knn":
                     print("Using knn for condition index")
                     random_idx = self._generate_condition_indices_knn(
@@ -1256,17 +1241,15 @@ class WorldMemMinecraft(DiffusionForcingBase):
             newly_generated_latents = xs_pred[curr_frame : curr_frame + next_horizon]
             newly_generated_latents_all.append(newly_generated_latents)
 
-            # --- ASYNCHRONOUS WRITE TO MEMORY (Incremental) ---
+            # --- WRITE TO VMEM MEMORY (Incremental) ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                decoded_chunk = self.decode(newly_generated_latents.to(device))
-                for i in range(next_horizon):
-                    frame_idx_to_write = curr_frame + i
-                    future = self.memory_update_executor.submit(
-                        self.vggt_retriever.add_view_to_memory,
-                        decoded_chunk[i, 0].clone(),
-                        c2w_mat[frame_idx_to_write, 0].clone()
-                    )
-                    self.pending_memory_futures.append(future)
+                print("Writing to VMem memory")
+                # Generate trajectory frames using VMem
+                new_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(next_horizon)]
+                new_Ks = [self.vmem_adapter.pipeline.Ks[0]] * next_horizon
+                print(f"New poses: {new_poses}")
+                print(f"New Ks: {new_Ks}")
+                self.vmem_adapter.generate_trajectory_frames(new_poses, new_Ks)
 
             curr_frame += next_horizon
             pbar.update(next_horizon)
