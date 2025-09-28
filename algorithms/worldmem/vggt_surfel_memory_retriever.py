@@ -197,6 +197,19 @@ class VGGTSurfelMemoryRetriever:
         else:
             raise ValueError("Expected torch.Tensor input for image")
         
+        # Ensure image spatial dimensions are multiples of VGGT's patch size (14)
+        # to avoid runtime errors: "Input image height X is not a multiple of patch height 14"
+        h, w = processed_image.shape[-2:]
+        new_h = ((h + 13) // 14) * 14
+        new_w = ((w + 13) // 14) * 14
+        if new_h != h or new_w != w:
+            processed_image = F.interpolate(
+                processed_image.unsqueeze(0),
+                size=(new_h, new_w),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(0)
+        
         # Convert camera pose to numpy if needed
         if isinstance(camera_pose, torch.Tensor):
             camera_pose = camera_pose.cpu().numpy()
@@ -204,7 +217,7 @@ class VGGTSurfelMemoryRetriever:
         # Run VGGT inference to get depth, point maps, and camera parameters
         try:
             # Add batch dimension and move to device
-            images = processed_image.unsqueeze(0).to(self.device)  # (1, 3, H, W)
+            images = processed_image.unsqueeze(0).to(self.device, dtype=self.dtype)  # (1, 3, H, W)
             
             with torch.no_grad():
                 with torch.cuda.amp.autocast(dtype=self.dtype):

@@ -1,4 +1,4 @@
-gits#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Test script to verify VGGT-based surfel memory retrieval integration with synchronization.
 """
