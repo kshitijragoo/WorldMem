@@ -24,8 +24,9 @@ from .models.vae import VAE_models
 from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
 from .dinov3_feature_extractor import DINOv3FeatureExtractor
+
 from.vggt_memory_retriever import VGGTMemoryRetriever
-from .vggt_memory_retriever import VGGTSurfelMemoryRetriever
+from .vggt_surfel_memeory_retriever import VGGTSurfelMemoryRetriever
 
 import glob
 
