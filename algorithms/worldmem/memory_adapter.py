@@ -8,9 +8,9 @@ from typing import List, Dict, Tuple, Optional, Union
 from omegaconf import OmegaConf
 
 # Add vmem to path
-vmem_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../vmem"))
-if vmem_path not in sys.path:
-    sys.path.insert(0, vmem_path)
+# vmem_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../vmem"))
+# if vmem_path not in sys.path:
+#     sys.path.insert(0, vmem_path)
 
 # Import VMem components
 
