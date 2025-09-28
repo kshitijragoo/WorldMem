@@ -1,287 +1,574 @@
-import torch
+# algorithms/worldmem/vggt_memory_retriever.py
+
+import os
+import sys
+import math
 import numpy as np
-from scipy.spatial import KDTree
-from vggt.models.vggt import VGGT
-from.geometry_utils import unproject_depth_to_pointcloud, pointcloud_to_surfels
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+import torch
 import torch.nn.functional as F
+from typing import List, Dict, Tuple, Optional, Union
+from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
 
-class VGGTMemoryRetriever:
+# Add VGGT to path - using vggt directory
+sys.path.append("../../vggt")
+from vggt.models.vggt import VGGT
+from vggt.utils.load_fn import load_and_preprocess_images
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+from vggt.utils.geometry import unproject_depth_map_to_point_map
+
+@dataclass
+class Surfel:
     """
-    Manages a geometrically-grounded memory using VGGT and a surfel index,
-    inspired by the VMem architecture.[1]
+    Surface element (surfel) representation for memory indexing.
     """
-    def __init__(self, device, d_thresh=0.1, n_thresh=0.9, downsample_factor=4):
+    position: np.ndarray  # 3D position (x, y, z)
+    normal: np.ndarray    # Surface normal (nx, ny, nz)
+    radius: float         # Surfel radius
+    view_indices: List[int]  # Indices of views that observed this surfel
+    
+    def __post_init__(self):
+        self.position = np.array(self.position, dtype=np.float32)
+        self.normal = np.array(self.normal, dtype=np.float32)
+        # Normalize the normal vector
+        norm = np.linalg.norm(self.normal)
+        if norm > 1e-8:
+            self.normal = self.normal / norm
+
+class Octree:
+    """
+    Simple octree implementation for efficient surfel spatial queries.
+    """
+    def __init__(self, positions: np.ndarray, max_points: int = 10, max_depth: int = 10):
+        self.max_points = max_points
+        self.max_depth = max_depth
+        self.positions = positions
+        self.indices = np.arange(len(positions))
+        
+        # Calculate bounding box
+        if len(positions) > 0:
+            self.min_bound = np.min(positions, axis=0)
+            self.max_bound = np.max(positions, axis=0)
+            self.center = (self.min_bound + self.max_bound) / 2
+            self.size = np.max(self.max_bound - self.min_bound)
+        else:
+            self.min_bound = np.zeros(3)
+            self.max_bound = np.ones(3)
+            self.center = np.array([0.5, 0.5, 0.5])
+            self.size = 1.0
+        
+        self.children = None
+        self.is_leaf = True
+        
+        if len(positions) > max_points and max_depth > 0:
+            self._subdivide(max_depth - 1)
+    
+    def _subdivide(self, remaining_depth):
+        if remaining_depth <= 0:
+            return
+            
+        self.is_leaf = False
+        self.children = []
+        
+        # Create 8 children
+        half_size = self.size / 2
+        for i in range(8):
+            child_center = self.center.copy()
+            child_center[0] += half_size / 2 * (1 if (i & 1) else -1)
+            child_center[1] += half_size / 2 * (1 if (i & 2) else -1)
+            child_center[2] += half_size / 2 * (1 if (i & 4) else -1)
+            
+            # Find points in this child
+            child_min = child_center - half_size / 2
+            child_max = child_center + half_size / 2
+            
+            mask = np.all((self.positions >= child_min) & (self.positions <= child_max), axis=1)
+            child_positions = self.positions[mask]
+            child_indices = self.indices[mask]
+            
+            if len(child_positions) > 0:
+                child = Octree.__new__(Octree)
+                child.max_points = self.max_points
+                child.max_depth = remaining_depth
+                child.positions = child_positions
+                child.indices = child_indices
+                child.min_bound = child_min
+                child.max_bound = child_max
+                child.center = child_center
+                child.size = half_size
+                child.children = None
+                child.is_leaf = True
+                
+                if len(child_positions) > self.max_points and remaining_depth > 0:
+                    child._subdivide(remaining_depth - 1)
+                    
+                self.children.append(child)
+    
+    def query_ball_point(self, center: np.ndarray, radius: float) -> List[int]:
+        """Query points within a ball around the center."""
+        result = []
+        self._query_ball_recursive(center, radius, result)
+        return result
+    
+    def _query_ball_recursive(self, center: np.ndarray, radius: float, result: List[int]):
+        # Check if sphere intersects with this node's bounding box
+        closest_point = np.clip(center, self.min_bound, self.max_bound)
+        dist_to_box = np.linalg.norm(center - closest_point)
+        
+        if dist_to_box > radius:
+            return
+            
+        if self.is_leaf:
+            # Check all points in this leaf
+            distances = np.linalg.norm(self.positions - center, axis=1)
+            mask = distances <= radius
+            result.extend(self.indices[mask].tolist())
+        else:
+            # Recurse to children
+            if self.children:
+                for child in self.children:
+                    child._query_ball_recursive(center, radius, result)
+
+class VGGTSurfelMemoryRetriever:
+    """
+    Surfel-based memory retrieval system using VGGT for geometry estimation.
+    This implements the VMem approach for view indexing and retrieval, but with VGGT's faster inference.
+    """
+    
+    def __init__(self, device: str = "cuda", model_path: Optional[str] = None):
         self.device = device
-        self.dtype = torch.float16
+        self.surfels: List[Surfel] = []
+        self.view_to_surfel_map: Dict[int, List[int]] = {}  # view_id -> surfel_indices
+        self.octree: Optional[Octree] = None
         
+        # VGGT model loading
         print("Loading VGGT model...")
-        self.vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(self.device, dtype=self.dtype)
+        if model_path is None:
+            # Use HuggingFace pretrained model
+            self.vggt_model = VGGT.from_pretrained("facebook/VGGT-1B").to(device)
+        else:
+            # Load from local path
+            self.vggt_model = VGGT().to(device)
+            self.vggt_model.load_state_dict(torch.load(model_path, map_location=device))
+        
         self.vggt_model.eval()
-        print("VGGT model loaded.")
-
-        # Memory stores
-        self.view_database =  []# Stores (raw_frame_tensor, c2w_matrix)
-        self.surfels = None      # Dict storing all surfel positions, normals, radii
-        self.surfel_to_views = []# List of lists, mapping surfel index to view indices
-        self.kdtree = None       # KD-Tree for efficient spatial queries.
-                                 # NOTE: Research recommends an Octree for better scalability in merging operations.[1]
-                                 # A KD-Tree is a valid and efficient alternative for nearest-neighbor searches.
-
-        # Hyperparameters for surfel merging [1, 1]
-        self.d_thresh = d_thresh
-        self.n_thresh = n_thresh
-        self.downsample_factor = downsample_factor
-
-    @torch.no_grad()
-    def add_view_to_memory(self, new_frame_tensor, new_c2w_matrix):
-        """
-        The "Write to Memory" pipeline. Processes a new frame to update the geometric index.
-        """
-        frame_index = len(self.view_database)
-        self.view_database.append((new_frame_tensor.cpu(), new_c2w_matrix.cpu()))
         
-        print(f"Adding view {frame_index} to geometric memory...")
-        
-        # 1. Geometry Acquisition via VGGT [1, 1]
-        image_size_hw = new_frame_tensor.shape[-2:]
-        
-        # Resize to make dimensions compatible with VGGT patch size (14)
-        h, w = image_size_hw
-        new_h = ((h + 13) // 14) * 14
-        new_w = ((w + 13) // 14) * 14
-        
-        resized_frame = F.interpolate(
-            new_frame_tensor.unsqueeze(0), 
-            size=(new_h, new_w), 
-            mode='bilinear', 
-            align_corners=False
-        )
-            
-        vggt_input = resized_frame.to(self.device, dtype=self.dtype)
-        
-        # FIX: Updated to use the recommended torch.amp.autocast syntax
-        with torch.amp.autocast(device_type='cuda', dtype=self.dtype):
-            predictions = self.vggt_model(vggt_input)
-
-        depth = predictions["depth"]
-        pose_enc = predictions["pose_enc"]
-
-        # 2. Unproject depth to get accurate point cloud [1, 1]
-        pointcloud = unproject_depth_to_pointcloud(depth, pose_enc, (new_h, new_w))
-        
-        # 3. Convert point cloud to surfels [1, 1]
-        extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc, (new_h, new_w))
-        camera_params = {'extrinsics': extrinsics, 'intrinsics': intrinsics}
-        new_positions, new_normals, new_radii = pointcloud_to_surfels(
-            pointcloud, camera_params, self.downsample_factor
-        )
-
-        # 4. Merge new surfels into the global index [1, 1]
-        if self.surfels is None:
-            self.surfels = {'pos': new_positions, 'norm': new_normals, 'rad': new_radii}
-            self.surfel_to_views = [[frame_index] for _ in range(len(new_positions))]
+        # Determine dtype based on GPU capability
+        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 8:
+            self.dtype = torch.bfloat16
         else:
-            if self.kdtree is not None and len(new_positions) > 0:
-                # Query the 5 nearest neighbors for each new surfel
-                distances, indices = self.kdtree.query(new_positions.cpu().numpy(), k=5, workers=-1)
-                
-                # FIX: Convert numpy distances to a tensor for consistent operations
-                distances = torch.from_numpy(distances).to(new_normals.device)
-
-                # Get existing normals for queried indices
-                existing_normals = self.surfels['norm'][indices] # Shape: (num_new_surfels, 5, 3)
-                
-                # Compute dot products in a batch: (num_new, 1, 3) dot (num_new, 5, 3) -> (num_new, 5)
-                normal_similarity = torch.sum(new_normals.unsqueeze(1) * existing_normals, dim=-1)
-
-                # Find the first match for each new surfel that satisfies both distance and normal thresholds
-                match_mask = (distances < self.d_thresh) & (normal_similarity > self.n_thresh)
-                
-                # Use find_first_true or equivalent logic to get the index of the first match
-                first_match_indices = torch.argmax(match_mask.int(), dim=1)
-                has_match = match_mask.any(dim=1)
-
-                # Update existing surfels for matched new surfels
-                if has_match.any():
-                    matched_new_indices = torch.arange(len(indices))[has_match]
-                    matched_global_indices = indices[matched_new_indices, first_match_indices[has_match]]
-                    for idx in matched_global_indices:
-                        if frame_index not in self.surfel_to_views[idx]:
-                            self.surfel_to_views[idx].append(frame_index)
-
-                # Add unmatched new surfels to the global index
-                unmatched_mask = ~has_match
-                if unmatched_mask.any():
-                    self.surfels['pos'] = torch.cat([self.surfels['pos'], new_positions[unmatched_mask]])
-                    self.surfels['norm'] = torch.cat([self.surfels['norm'], new_normals[unmatched_mask]])
-                    self.surfels['rad'] = torch.cat([self.surfels['rad'], new_radii[unmatched_mask]])
-                    for _ in range(unmatched_mask.sum()):
-                        self.surfel_to_views.append([frame_index])
-
-        # Rebuild KD-Tree after updates
-        if self.surfels and len(self.surfels['pos']) > 0:
-            self.kdtree = KDTree(self.surfels['pos'].cpu().numpy())
-            print(f"Memory updated. Total surfels: {len(self.surfels['pos'])}")
-
-    @torch.no_grad()
-    def retrieve_relevant_views(self, target_c2w, k=4, intrinsics=None, image_size=(256, 256)):
+            self.dtype = torch.float16
+        
+        # Parameters for surfel creation and merging
+        self.position_threshold = 0.025  # Distance threshold for merging surfels
+        self.normal_threshold = 0.7      # Cosine similarity threshold for normals
+        self.radius_scale = 0.5          # Scale factor for surfel radius calculation
+        self.downsample_factor = 4       # Downsample factor for efficiency
+        
+        # Threading for asynchronous operations
+        self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
+    
+    def __del__(self):
+        """Clean up the executor on deletion."""
+        if hasattr(self, 'memory_update_executor'):
+            self.memory_update_executor.shutdown(wait=True)
+    
+    def add_view_to_memory(self, image: torch.Tensor, camera_pose: torch.Tensor, view_index: int):
         """
-        The "Read from Memory" pipeline. Retrieves top-K views using an occlusion-aware mechanism.
-        This is a simplified but more robust simulation of the GPU rendering pipeline described in the research.[1, 1]
+        Add a new view to the surfel-based memory.
+        
+        Args:
+            image: RGB image tensor of shape (3, H, W) or (H, W, 3)
+            camera_pose: Camera-to-world transformation matrix (4, 4)
+            view_index: Unique identifier for this view
         """
-        if self.surfels is None or len(self.view_database) <= k:
-            # Fallback for early stages: return most recent frames
-            num_views = len(self.view_database)
-            indices = list(range(max(0, num_views - k), num_views))
-            while len(indices) < k: indices.append(0) # Pad if necessary
-            return indices
-
-        print(f"Retrieving from memory for target pose...")
-        
-        # 1. Broad-phase Culling (Simplified to radius search)
-        cam_center = target_c2w[:3, 3]
-        # Increased radius for better coverage
-        candidate_indices = self.kdtree.query_ball_point(cam_center.cpu().numpy(), r=100.0)
-        
-        if not candidate_indices:
-            return list(range(max(0, len(self.view_database) - k), len(self.view_database)))
-
-        culled_pos = self.surfels['pos'][candidate_indices].to(self.device)
-        culled_rad = self.surfels['rad'][candidate_indices].to(self.device)
-        
-        # 2. Visibility Check with Simplified Z-Buffering [1, 1]
-        # This is the core improvement: it approximates occlusion handling.
-        w2c = torch.linalg.inv(target_c2w.to(self.device))
-        R = w2c[:3, :3]
-        t = w2c[:3, 3]
-
-        # Transform surfel positions to camera space
-        cam_space_pos = torch.matmul(culled_pos, R.T) + t
-        
-        # Frustum check: only consider points in front of the camera
-        front_mask = cam_space_pos[:, 2] > 0.1
-        if not torch.any(front_mask):
-            return list(range(max(0, len(self.view_database) - k), len(self.view_database)))
-
-        cam_space_pos = cam_space_pos[front_mask]
-        culled_rad = culled_rad[front_mask]
-        original_indices = np.array(candidate_indices)[front_mask.cpu().numpy()]
-
-        # Project points to screen space (assuming simple intrinsics if not provided)
-        if intrinsics is None:
-            H, W = image_size
-            focal = 1.2 * W
-            K = torch.tensor([[focal, 0, W/2], [0, focal, H/2], [0, 0, 1]], device=self.device, dtype=self.dtype)
+        # Prepare image for VGGT processing
+        if isinstance(image, torch.Tensor):
+            if image.dim() == 3 and image.shape[0] == 3:
+                # VGGT expects (3, H, W) format
+                processed_image = image.clone()
+            else:
+                # Convert from (H, W, 3) to (3, H, W)
+                processed_image = image.permute(2, 0, 1)
+            
+            # Ensure values are in [0, 1] range
+            if processed_image.max() > 1.0:
+                processed_image = processed_image / 255.0
         else:
-            K = intrinsics.to(self.device, dtype=self.dtype)
-
-        # Perspective projection: u = K * p_cam
-        uvz = torch.matmul(cam_space_pos, K.T)
-        uv = uvz[:, :2] / (uvz[:, 2].unsqueeze(-1) + 1e-6)
-
-        # Create a simplified Z-buffer (depth buffer)
-        z_buffer = torch.full(image_size, float('inf'), device=self.device, dtype=self.dtype)
-        index_buffer = torch.full(image_size, -1, dtype=torch.long, device=self.device)
-
-        # Sort surfels by depth (front-to-back) for correct occlusion
-        depths = cam_space_pos[:, 2]
-        sorted_depth_indices = torch.argsort(depths)
-
-        # Rasterize splats (simplified as squares for efficiency)
-        for idx in sorted_depth_indices:
-            u, v = uv[idx]
-            depth = depths[idx]
-            # FIX: Correctly calculate projected radius using focal length from K matrix
-            focal_length = K[0, 0]  # Extract focal length from intrinsics matrix
-            radius_proj = (culled_rad[idx] * focal_length / (depth + 1e-6)).int()
-            
-            # Define pixel bounds for the splat
-            # FIX: Correctly use image_size tuple indices
-            u_min, u_max = max(0, int(u - radius_proj)), min(image_size[1] - 1, int(u + radius_proj))
-            v_min, v_max = max(0, int(v - radius_proj)), min(image_size[0] - 1, int(v + radius_proj))
-
-            if u_min >= u_max or v_min >= v_max: continue
-
-            # Z-buffer test: update pixels if the current surfel is closer
-            patch = z_buffer[v_min:v_max, u_min:u_max]
-            visible_pixels = patch > depth
-            
-            z_buffer[v_min:v_max, u_min:u_max][visible_pixels] = depth
-            index_buffer[v_min:v_max, u_min:u_max][visible_pixels] = original_indices[idx]
-
-        # 3. Voting based on the visible surfels in the index buffer [1, 1]
-        visible_surfel_indices = index_buffer[index_buffer!= -1].cpu().numpy()
-        if len(visible_surfel_indices) == 0:
-            return list(range(max(0, len(self.view_database) - k), len(self.view_database)))
-
-        vote_counts = {}
-        for surfel_idx in visible_surfel_indices:
-            for view_idx in self.surfel_to_views[surfel_idx]:
-                vote_counts[view_idx] = vote_counts.get(view_idx, 0) + 1
+            raise ValueError("Expected torch.Tensor input for image")
         
-        if not vote_counts:
-            return list(range(max(0, len(self.view_database) - k), len(self.view_database)))
-
-        # 4. Filtering and Selection (Non-Maximum Suppression on poses) [1, 1]
-        sorted_views = sorted(vote_counts.items(), key=lambda item: item[1], reverse=True)
+        # Convert camera pose to numpy if needed
+        if isinstance(camera_pose, torch.Tensor):
+            camera_pose = camera_pose.cpu().numpy()
         
-        selected_indices = []
-        selected_poses = []
-        pose_dist_thresh = 2.0 # Heuristic distance threshold
-
-        for view_idx, _ in sorted_views:
-            if len(selected_indices) >= k: break
+        # Run VGGT inference to get depth, point maps, and camera parameters
+        try:
+            # Add batch dimension and move to device
+            images = processed_image.unsqueeze(0).to(self.device)  # (1, 3, H, W)
             
-            is_redundant = False
-            current_pose_c2w = self.view_database[view_idx][1]
-            for sel_pose in selected_poses:
-                if torch.linalg.norm(current_pose_c2w[:3, 3] - sel_pose[:3, 3]) < pose_dist_thresh:
-                    is_redundant = True
+            with torch.no_grad():
+                with torch.cuda.amp.autocast(dtype=self.dtype):
+                    # VGGT processes single images efficiently
+                    predictions = self.vggt_model(images)
+            
+            # Extract predictions
+            depth_map = predictions['depth'][0, 0]  # (H, W)
+            depth_conf = predictions['depth_conf'][0, 0]  # (H, W)
+            
+            # Get camera parameters and convert to extrinsics/intrinsics
+            pose_enc = predictions['pose_enc'][0, 0]  # (9,)
+            extrinsic, intrinsic = pose_encoding_to_extri_intri(
+                pose_enc.unsqueeze(0).unsqueeze(0), 
+                images.shape[-2:]
+            )
+            
+            # Use VGGT's world points if available, otherwise unproject depth
+            if 'world_points' in predictions:
+                world_points = predictions['world_points'][0, 0]  # (H, W, 3)
+            else:
+                # Unproject depth to get world points
+                world_points = unproject_depth_map_to_point_map(
+                    depth_map.unsqueeze(0).unsqueeze(-1).cpu().numpy(),
+                    extrinsic.cpu().numpy(),
+                    intrinsic.cpu().numpy()
+                )[0]  # (H, W, 3)
+                world_points = torch.from_numpy(world_points).to(self.device)
+            
+            # Convert to surfels
+            new_surfels = self._vggt_to_surfels(
+                world_points, depth_map, depth_conf, camera_pose, view_index
+            )
+            
+            # Merge with existing surfels
+            self._merge_surfels_into_memory(new_surfels, view_index)
+            
+        except Exception as e:
+            print(f"Warning: Failed to process view {view_index} with VGGT: {e}")
+    
+    def _vggt_to_surfels(self, world_points: torch.Tensor, depth: torch.Tensor, 
+                        confidence: torch.Tensor, camera_pose: np.ndarray, 
+                        view_index: int) -> List[Surfel]:
+        """
+        Convert VGGT world points to surfels.
+        
+        Args:
+            world_points: World points tensor (H, W, 3)
+            depth: Depth map tensor (H, W)
+            confidence: Confidence map tensor (H, W)
+            camera_pose: Camera pose matrix (4, 4)
+            view_index: View index for this surfel
+            
+        Returns:
+            List of Surfel objects
+        """
+        if isinstance(world_points, torch.Tensor):
+            world_points = world_points.cpu().numpy()
+        if isinstance(depth, torch.Tensor):
+            depth = depth.cpu().numpy()
+        if isinstance(confidence, torch.Tensor):
+            confidence = confidence.cpu().numpy()
+        
+        H, W = world_points.shape[:2]
+        
+        # Downsample for efficiency
+        step = self.downsample_factor
+        H_ds, W_ds = H // step, W // step
+        
+        surfels = []
+        camera_center = camera_pose[:3, 3]
+        
+        # Create confidence threshold
+        conf_threshold = np.percentile(confidence, 50)  # Use median as threshold
+        
+        for v in range(0, H_ds * step, step):
+            for u in range(0, W_ds * step, step):
+                if v >= H or u >= W:
+                    continue
+                
+                # Check confidence
+                if confidence[v, u] < conf_threshold:
+                    continue
+                
+                # Get 3D position
+                position = world_points[v, u]
+                
+                # Skip invalid points
+                if np.any(np.isnan(position)) or np.any(np.isinf(position)):
+                    continue
+                
+                # Estimate normal using neighboring points
+                normal = self._estimate_normal(world_points, v, u, H, W)
+                if normal is None:
+                    continue
+                
+                # Calculate surfel radius based on depth and viewing angle
+                depth_val = depth[v, u]
+                view_dir = position - camera_center
+                view_dir_norm = view_dir / (np.linalg.norm(view_dir) + 1e-8)
+                
+                # Angle between view direction and normal
+                cos_angle = np.abs(np.dot(normal, view_dir_norm))
+                cos_angle = max(cos_angle, 0.1)  # Avoid division by very small numbers
+                
+                # Radius proportional to depth and inversely proportional to viewing angle
+                radius = self.radius_scale * depth_val / (100.0 * cos_angle)  # Assuming focal length ~100
+                radius = max(radius, 0.001)  # Minimum radius
+                
+                # Create surfel
+                surfel = Surfel(
+                    position=position,
+                    normal=normal,
+                    radius=radius,
+                    view_indices=[view_index]
+                )
+                surfels.append(surfel)
+        
+        return surfels
+    
+    def _estimate_normal(self, pointmap: np.ndarray, v: int, u: int, H: int, W: int) -> Optional[np.ndarray]:
+        """Estimate surface normal at a pixel using neighboring points."""
+        # Get neighboring points
+        neighbors = []
+        for dv in [-1, 0, 1]:
+            for du in [-1, 0, 1]:
+                nv, nu = v + dv, u + du
+                if 0 <= nv < H and 0 <= nu < W:
+                    point = pointmap[nv, nu]
+                    if not (np.any(np.isnan(point)) or np.any(np.isinf(point))):
+                        neighbors.append(point)
+        
+        if len(neighbors) < 4:
+            return None
+        
+        # Use cross product of displacement vectors
+        center = pointmap[v, u]
+        
+        # Try different neighbor pairs to get stable normal
+        normals = []
+        for i in range(len(neighbors)):
+            for j in range(i + 1, len(neighbors)):
+                v1 = neighbors[i] - center
+                v2 = neighbors[j] - center
+                
+                if np.linalg.norm(v1) > 1e-6 and np.linalg.norm(v2) > 1e-6:
+                    normal = np.cross(v1, v2)
+                    norm_len = np.linalg.norm(normal)
+                    if norm_len > 1e-6:
+                        normals.append(normal / norm_len)
+        
+        if len(normals) == 0:
+            return None
+        
+        # Average the normals
+        avg_normal = np.mean(normals, axis=0)
+        norm_len = np.linalg.norm(avg_normal)
+        if norm_len < 1e-6:
+            return None
+        
+        return avg_normal / norm_len
+    
+    def _merge_surfels_into_memory(self, new_surfels: List[Surfel], view_index: int):
+        """
+        Merge new surfels into the existing memory, combining similar surfels.
+        
+        Args:
+            new_surfels: List of new surfels to add
+            view_index: Index of the view these surfels came from
+        """
+        if len(self.surfels) == 0:
+            # First surfels, just add them
+            self.surfels.extend(new_surfels)
+            self.view_to_surfel_map[view_index] = list(range(len(new_surfels)))
+            self._rebuild_octree()
+            return
+        
+        # Build octree if needed
+        if self.octree is None:
+            self._rebuild_octree()
+        
+        merged_count = 0
+        new_surfel_indices = []
+        
+        for new_surfel in new_surfels:
+            # Find nearby existing surfels
+            nearby_indices = self.octree.query_ball_point(new_surfel.position, self.position_threshold)
+            
+            merged = False
+            for idx in nearby_indices:
+                existing_surfel = self.surfels[idx]
+                
+                # Check normal similarity
+                normal_sim = np.dot(existing_surfel.normal, new_surfel.normal)
+                if normal_sim > self.normal_threshold:
+                    # Merge with existing surfel
+                    if view_index not in existing_surfel.view_indices:
+                        existing_surfel.view_indices.append(view_index)
+                    merged = True
+                    merged_count += 1
+                    new_surfel_indices.append(idx)
                     break
             
-            if not is_redundant:
-                selected_indices.append(view_idx)
-                selected_poses.append(current_pose_c2w)
-
-        # Pad if not enough unique views were found
-        if len(selected_indices) < k:
-            recent_indices = reversed(range(len(self.view_database)))
-            for idx in recent_indices:
-                if len(selected_indices) >= k: break
-                if idx not in selected_indices:
-                    selected_indices.append(idx)
+            if not merged:
+                # Add as new surfel
+                new_idx = len(self.surfels)
+                self.surfels.append(new_surfel)
+                new_surfel_indices.append(new_idx)
         
-        print(f"Retrieved indices: {selected_indices}")
-        return selected_indices
+        # Update view to surfel mapping
+        self.view_to_surfel_map[view_index] = new_surfel_indices
+        
+        # Rebuild octree with new surfels
+        self._rebuild_octree()
+        
+        print(f"Added {len(new_surfels)} surfels, merged {merged_count}, total surfels: {len(self.surfels)}")
     
-    def export_world_visualization(self, output_dir: str = "memory_viz"):
+    def _rebuild_octree(self):
+        """Rebuild the octree with current surfels."""
+        if len(self.surfels) > 0:
+            positions = np.array([surfel.position for surfel in self.surfels])
+            self.octree = Octree(positions, max_points=10)
+        else:
+            self.octree = None
+    
+    def retrieve_relevant_views(self, target_pose: torch.Tensor, k: int = 8, 
+                              image_size: Tuple[int, int] = (64, 64)) -> List[int]:
         """
-        Export the current world representation for visualization.
+        Retrieve the most relevant views for a target camera pose.
         
         Args:
-            output_dir: Directory to save visualization files
-        """
-        try:
-            from .memory_visualizer import export_memory_visualization
-            return export_memory_visualization(self, output_dir)
-        except ImportError:
-            print("Warning: trimesh not available. Install with: pip install trimesh")
-            return None
-    
-    def visualize_retrieval(self, target_c2w: torch.Tensor, k: int = 4, output_path: str = None):
-        """
-        Visualize which views would be retrieved for a given target pose.
-        
-        Args:
-            target_c2w: Target camera-to-world matrix
+            target_pose: Target camera pose (4, 4)
             k: Number of views to retrieve
-            output_path: Optional path to save visualization
+            image_size: Size for surfel rendering (height, width)
+            
+        Returns:
+            List of view indices sorted by relevance
         """
-        try:
-            from .memory_visualizer import VGGTMemoryVisualizer
-            visualizer = VGGTMemoryVisualizer(self)
-            return visualizer.visualize_retrieval_for_pose(target_c2w, k, output_path)
-        except ImportError:
-            print("Warning: trimesh not available. Install with: pip install trimesh")
-            return None
+        if len(self.surfels) == 0:
+            return []
+        
+        if isinstance(target_pose, torch.Tensor):
+            target_pose = target_pose.cpu().numpy()
+        
+        # Render surfels from target pose to get visibility
+        view_votes = self._render_surfels_for_retrieval(target_pose, image_size)
+        
+        # Sort views by vote count and return top k
+        sorted_views = sorted(view_votes.items(), key=lambda x: x[1], reverse=True)
+        
+        # Apply non-maximum suppression to avoid similar views
+        selected_views = self._apply_nms_to_views(sorted_views, k)
+        
+        return [view_idx for view_idx, _ in selected_views[:k]]
+    
+    def _render_surfels_for_retrieval(self, target_pose: np.ndarray, 
+                                    image_size: Tuple[int, int]) -> Dict[int, float]:
+        """
+        Render surfels from target pose to determine view relevance.
+        
+        Args:
+            target_pose: Camera pose matrix (4, 4)
+            image_size: Rendering resolution (height, width)
+            
+        Returns:
+            Dictionary mapping view indices to relevance scores
+        """
+        H, W = image_size
+        view_votes = {}
+        
+        # Camera parameters
+        focal_length = min(H, W) * 0.8  # Reasonable focal length
+        cx, cy = W / 2, H / 2
+        
+        # Camera center and rotation
+        camera_center = target_pose[:3, 3]
+        rotation = target_pose[:3, :3]
+        
+        # Create depth buffer for occlusion handling
+        depth_buffer = np.full((H, W), np.inf)
+        vote_buffer = np.zeros((H, W), dtype=object)
+        
+        # Initialize vote buffer
+        for i in range(H):
+            for j in range(W):
+                vote_buffer[i, j] = {}
+        
+        for surfel in self.surfels:
+            # Transform surfel to camera coordinates
+            surfel_cam = rotation.T @ (surfel.position - camera_center)
+            
+            # Skip surfels behind camera
+            if surfel_cam[2] <= 0:
+                continue
+            
+            # Project to image plane
+            x_proj = focal_length * surfel_cam[0] / surfel_cam[2] + cx
+            y_proj = focal_length * surfel_cam[1] / surfel_cam[2] + cy
+            
+            # Check if projection is within image bounds
+            if x_proj < 0 or x_proj >= W or y_proj < 0 or y_proj >= H:
+                continue
+            
+            # Calculate surfel coverage in image
+            depth = surfel_cam[2]
+            pixel_radius = max(1, int(focal_length * surfel.radius / depth))
+            
+            # Render surfel as a circle
+            u_center, v_center = int(x_proj), int(y_proj)
+            
+            for v in range(max(0, v_center - pixel_radius), min(H, v_center + pixel_radius + 1)):
+                for u in range(max(0, u_center - pixel_radius), min(W, u_center + pixel_radius + 1)):
+                    # Check if pixel is within surfel radius
+                    dist = np.sqrt((u - x_proj)**2 + (v - y_proj)**2)
+                    if dist <= pixel_radius:
+                        # Check depth buffer for occlusion
+                        if depth < depth_buffer[v, u]:
+                            depth_buffer[v, u] = depth
+                            
+                            # Vote for views that observed this surfel
+                            for view_idx in surfel.view_indices:
+                                if view_idx not in vote_buffer[v, u]:
+                                    vote_buffer[v, u][view_idx] = 0
+                                # Weight by inverse distance and surfel size
+                                weight = (pixel_radius - dist + 1) / (depth + 1)
+                                vote_buffer[v, u][view_idx] += weight
+        
+        # Aggregate votes across all pixels
+        for i in range(H):
+            for j in range(W):
+                for view_idx, weight in vote_buffer[i, j].items():
+                    if view_idx not in view_votes:
+                        view_votes[view_idx] = 0
+                    view_votes[view_idx] += weight
+        
+        return view_votes
+    
+    def _apply_nms_to_views(self, sorted_views: List[Tuple[int, float]], k: int) -> List[Tuple[int, float]]:
+        """
+        Apply non-maximum suppression to avoid selecting very similar views.
+        This is a placeholder - in practice, you'd compare camera poses.
+        
+        Args:
+            sorted_views: List of (view_index, score) tuples sorted by score
+            k: Maximum number of views to select
+            
+        Returns:
+            List of selected (view_index, score) tuples
+        """
+        # For now, just return the top k views
+        # In a full implementation, you'd compare camera poses to avoid similar viewpoints
+        return sorted_views[:k]
+    
+    def get_memory_stats(self) -> Dict[str, int]:
+        """Get statistics about the current memory state."""
+        total_views = len(self.view_to_surfel_map)
+        total_surfels = len(self.surfels)
+        
+        # Calculate average views per surfel
+        view_counts = [len(surfel.view_indices) for surfel in self.surfels]
+        avg_views_per_surfel = np.mean(view_counts) if view_counts else 0
+        
+        return {
+            "total_views": total_views,
+            "total_surfels": total_surfels,
+            "avg_views_per_surfel": avg_views_per_surfel
+        }

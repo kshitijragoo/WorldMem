@@ -25,7 +25,11 @@ from .models.diffusion import Diffusion
 from .models.pose_prediction import PosePredictionNet
 from .dinov3_feature_extractor import DINOv3FeatureExtractor
 from.vggt_memory_retriever import VGGTMemoryRetriever
+<<<<<<< Updated upstream
 from.surfel_memory_retriever import SurfelMemoryRetriever
+=======
+from .vggt_memory_retriever import VGGTSurfelMemoryRetriever
+>>>>>>> Stashed changes
 
 import glob
 
@@ -389,7 +393,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             self.similarity_threshold = 0.95 # For redundancy filtering
 
         # Initialize VGGT-based geometric memory retrieval if the method is selected
-        elif self.condition_index_method.lower() == "vggt_surfel":
+        elif self.condition_index_method.lower() == "vggt_surfel2":
             print("Initializing VGGT-based geometric memory retrieval.")
             self.vggt_retriever = VGGTMemoryRetriever(device=self.device)
             # --- ASYNCHRONOUS MEMORY WRITER INITIALIZATION ---
@@ -398,11 +402,22 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # max_workers=1 ensures that memory updates are processed sequentially to avoid race conditions.
             self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
         
+<<<<<<< Updated upstream
         # Initialize Surfel-based memory retrieval using CUT3R (VMem approach)
         elif self.condition_index_method.lower() == "surfel":
             print("Initializing Surfel-based memory retrieval using CUT3R (VMem approach).")
             self.surfel_retriever = SurfelMemoryRetriever(device=self.device)
             # Asynchronous memory writer for surfel updates
+=======
+        # Initialize VGGT-based surfel memory retrieval if the method is selected
+        elif self.condition_index_method.lower() == "vggt_surfel":
+            print("Initializing VGGT-based surfel memory retrieval.")
+            self.vggt_surfel_retriever = VGGTSurfelMemoryRetriever(device=self.device)
+            # --- ASYNCHRONOUS MEMORY WRITER INITIALIZATION ---
+            # This executor will handle the computationally expensive "Write to Memory" operations
+            # in a separate thread, preventing the main generation loop from blocking.
+            # max_workers=1 ensures that memory updates are processed sequentially to avoid race conditions.
+>>>>>>> Stashed changes
             self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
 
     def __del__(self):
@@ -951,7 +966,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         xs_pred = xs[:n_context_frames].clone()
 
         # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (Initial Context) ---
-        if self.condition_index_method.lower() == "vggt_surfel":
+        if self.condition_index_method.lower() == "vggt_surfel2":
             print("Asynchronously initializing geometric memory with context frames...")
             # Assuming batch size is 1 for validation simplicity
             for i in range(n_context_frames):
@@ -964,6 +979,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     c2w_mat[i, 0].clone()
                 )
         
+<<<<<<< Updated upstream
         # --- ASYNCHRONOUS SURFEL WRITE TO MEMORY (Initial Context) ---
         elif self.condition_index_method.lower() == "surfel":
             print("Asynchronously initializing surfel-based memory with context frames...")
@@ -974,6 +990,21 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     self.surfel_retriever.add_view_to_memory,
                     xs_raw[i, 0].clone(),
                     c2w_mat[i, 0].clone()
+=======
+        # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (Initial Context) ---
+        elif self.condition_index_method.lower() == "vggt_surfel":
+            print("Asynchronously initializing VGGT-based surfel memory with context frames...")
+            # Assuming batch size is 1 for validation simplicity
+            for i in range(n_context_frames):
+                # Submit the memory update task to the background executor.
+                # The.clone() is important to pass a copy of the tensor, preventing potential
+                # race conditions if the main thread modifies the original tensor.
+                self.memory_update_executor.submit(
+                    self.vggt_surfel_retriever.add_view_to_memory,
+                    xs_raw[i, 0].clone(),
+                    c2w_mat[i, 0].clone(),
+                    i  # view_index
+>>>>>>> Stashed changes
                 )
 
         curr_frame = n_context_frames
@@ -1000,16 +1031,23 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # This part must be synchronous as the result is needed for the next generation step.
             random_idx = None
             if memory_condition_length:
-                if self.condition_index_method.lower() == "vggt_surfel":
+                if self.condition_index_method.lower() == "vggt_surfel2":
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
                         target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
                     )
                     random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+<<<<<<< Updated upstream
                 elif self.condition_index_method.lower() == "surfel":
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.surfel_retriever.retrieve_relevant_views(
                         target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
+=======
+                elif self.condition_index_method.lower() == "vggt_surfel":
+                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
+                    retrieved_indices = self.vggt_surfel_retriever.retrieve_relevant_views(
+                        target_pose_c2w, k=memory_condition_length, image_size=(64, 64)  # Smaller for efficiency
+>>>>>>> Stashed changes
                     )
                     random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
                 elif self.condition_index_method.lower() == "knn":
@@ -1059,7 +1097,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             xs_pred = torch.cat([xs_pred, newly_generated_latents], 0)
 
             # --- ASYNCHRONOUS WRITE TO MEMORY (Incremental) ---
-            if self.condition_index_method.lower() == "vggt_surfel":
+            if self.condition_index_method.lower() == "vggt_surfel2":
                 # Decode only the newly generated chunk for memory writing
                 decoded_chunk = self.decode(newly_generated_latents.to(self.device))
                 for i in range(horizon):
@@ -1071,16 +1109,30 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+<<<<<<< Updated upstream
             elif self.condition_index_method.lower() == "surfel":
+=======
+            elif self.condition_index_method.lower() == "vggt_surfel":
+>>>>>>> Stashed changes
                 # Decode only the newly generated chunk for memory writing
                 decoded_chunk = self.decode(newly_generated_latents.to(self.device))
                 for i in range(horizon):
                     frame_idx_to_write = curr_frame + i
+<<<<<<< Updated upstream
                     # Asynchronously update surfel-based memory
                     self.memory_update_executor.submit(
                         self.surfel_retriever.add_view_to_memory,
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
+=======
+                    # NOTE: This is now an asynchronous call. It submits the task to the background
+                    # thread and the main loop continues immediately without waiting.
+                    self.memory_update_executor.submit(
+                        self.vggt_surfel_retriever.add_view_to_memory,
+                        decoded_chunk[i, 0].clone(),
+                        c2w_mat[frame_idx_to_write, 0].clone(),
+                        frame_idx_to_write  # view_index
+>>>>>>> Stashed changes
                     )
 
             curr_frame += horizon
@@ -1117,17 +1169,26 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_frame_idx = torch.tensor([[0]]).to(device)
         
             # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
-            if self.condition_index_method.lower() == "vggt_surfel":
+            if self.condition_index_method.lower() == "vggt_surfel2":
                 self.memory_update_executor.submit(
                     self.vggt_retriever.add_view_to_memory,
                     first_frame.clone(),
                     new_c2w_mat.clone()
                 )
+<<<<<<< Updated upstream
             elif self.condition_index_method.lower() == "surfel":
                 self.memory_update_executor.submit(
                     self.surfel_retriever.add_view_to_memory,
                     first_frame.clone(),
                     new_c2w_mat.clone()
+=======
+            elif self.condition_index_method.lower() == "vggt_surfel":
+                self.memory_update_executor.submit(
+                    self.vggt_surfel_retriever.add_view_to_memory,
+                    first_frame.clone(),
+                    new_c2w_mat.clone(),
+                    0  # view_index for first frame
+>>>>>>> Stashed changes
                 )
             elif self.condition_index_method.lower() == "dinov3":
                 memory_raw_frames = first_frame[None, None].cpu()
@@ -1218,7 +1279,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 if self.condition_index_method.lower() == "vggt_surfel":
                     print("Using vggt_surfel for condition index")
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
-                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
+                    retrieved_indices = self.vggt_surfel_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
                     random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
                 elif self.condition_index_method.lower() == "surfel":
                     print("Using surfel for condition index")
@@ -1273,7 +1334,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
             newly_generated_latents_all.append(newly_generated_latents)
 
             # --- ASYNCHRONOUS WRITE TO MEMORY (Incremental) ---
-            if self.condition_index_method.lower() == "vggt_surfel":
+            if self.condition_index_method.lower() == "vggt_surfel2":
                 decoded_chunk = self.decode(newly_generated_latents.to(device))
                 for i in range(next_horizon):
                     frame_idx_to_write = curr_frame + i
@@ -1282,14 +1343,25 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+<<<<<<< Updated upstream
             elif self.condition_index_method.lower() == "surfel":
+=======
+            elif self.condition_index_method.lower() == "vggt_surfel":
+>>>>>>> Stashed changes
                 decoded_chunk = self.decode(newly_generated_latents.to(device))
                 for i in range(next_horizon):
                     frame_idx_to_write = curr_frame + i
                     self.memory_update_executor.submit(
+<<<<<<< Updated upstream
                         self.surfel_retriever.add_view_to_memory,
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
+=======
+                        self.vggt_surfel_retriever.add_view_to_memory,
+                        decoded_chunk[i, 0].clone(),
+                        c2w_mat[frame_idx_to_write, 0].clone(),
+                        frame_idx_to_write  # view_index
+>>>>>>> Stashed changes
                     )
 
             curr_frame += next_horizon
