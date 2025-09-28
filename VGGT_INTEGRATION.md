@@ -73,6 +73,14 @@ This will test:
 3. **Radius Calculation**: Determines surfel radius based on depth and viewing angle
 4. **Merging**: Combines similar surfels to avoid redundancy
 
+### Synchronization Strategy
+
+The asynchronous memory system ensures consistency through:
+1. **Future Tracking**: All memory write operations return futures that are tracked
+2. **Synchronization Points**: Before each memory read, all pending writes are completed
+3. **Sequential Processing**: ThreadPoolExecutor with max_workers=1 ensures sequential updates
+4. **Race Condition Prevention**: Proper tensor cloning and future management
+
 ### Memory Retrieval Process
 
 1. **Surfel Rendering**: Renders surfels from the target viewpoint
@@ -80,12 +88,14 @@ This will test:
 3. **Relevance Scoring**: Ranks views by the total votes received
 4. **Non-Maximum Suppression**: Reduces redundancy in selected views
 
-### Asynchronous Operations
+### Asynchronous Operations with Synchronization
 
-The system uses ThreadPoolExecutor for asynchronous memory updates:
+The system uses ThreadPoolExecutor for asynchronous memory updates with proper synchronization:
 - Memory writing operations run in the background
-- Main generation loop continues without blocking
+- Main generation loop continues without blocking during writes
+- **Synchronization points**: Memory updates are synchronized before memory reads
 - Ensures sequential processing to avoid race conditions
+- Tracks pending futures to ensure completion before retrieval
 
 ## Dependencies
 
