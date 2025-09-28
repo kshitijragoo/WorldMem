@@ -13,15 +13,27 @@ if vmem_path not in sys.path:
     sys.path.insert(0, vmem_path)
 
 # Import VMem components
-from modeling.pipeline import VMemPipeline
 
-from utils.util import (
+# the utils.util is in the folder CITS4010-4011vmem/utils/util.py
+# we are in the folder CITS4010-4011
+# so we need to go up one level to get to the vmem folder and then import the utils.util
+# vmem_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "vmem"))
+# if vmem_path not in sys.path:
+#     sys.path.insert(0, vmem_path)
+
+from vmem.modeling.pipeline import VMemPipeline
+
+
+from vmem.utils.util import (
     tensor_to_pil, 
     get_default_intrinsics, 
     load_img_and_K, 
     transform_img_and_K,
     average_camera_pose
 )
+
+# same for this from modeling.pipeline import VMemPipeline
+
 
 class VMemAdapter:
     """
