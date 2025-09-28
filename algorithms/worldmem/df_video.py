@@ -396,6 +396,20 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # in a separate thread, preventing the main generation loop from blocking.
             # max_workers=1 ensures that memory updates are processed sequentially to avoid race conditions.
             self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
+            # Keep track of pending memory update futures for synchronization
+            self.pending_memory_futures = []
+
+    def _wait_for_memory_updates(self):
+        """Wait for all pending memory updates to complete."""
+        if hasattr(self, 'pending_memory_futures'):
+            # Wait for all pending futures to complete
+            for future in self.pending_memory_futures:
+                try:
+                    future.result()  # This will block until the future completes
+                except Exception as e:
+                    print(f"Warning: Memory update failed: {e}")
+            # Clear the list after all updates are complete
+            self.pending_memory_futures.clear()
 
     def __del__(self):
         # --- SHUTDOWN EXECUTOR ---
@@ -950,11 +964,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 # Submit the memory update task to the background executor.
                 # The.clone() is important to pass a copy of the tensor, preventing potential
                 # race conditions if the main thread modifies the original tensor.
-                self.memory_update_executor.submit(
+                future = self.memory_update_executor.submit(
                     self.vggt_retriever.add_view_to_memory,
                     xs_raw[i, 0].clone(),
                     c2w_mat[i, 0].clone()
                 )
+                self.pending_memory_futures.append(future)
 
         curr_frame = n_context_frames
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
@@ -975,6 +990,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # Sliding window: determine the start frame for diffusion model input
             start_frame = max(0, curr_frame + horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + horizon})
+
+            # --- WAIT FOR MEMORY UPDATES TO COMPLETE ---
+            # Ensure all pending memory updates are completed before reading from memory
+            if self.condition_index_method.lower() == "vggt_surfel":
+                self._wait_for_memory_updates()
 
             # --- SYNCHRONOUS READ FROM MEMORY ---
             # This part must be synchronous as the result is needed for the next generation step.
@@ -1039,15 +1059,21 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 for i in range(horizon):
                     frame_idx_to_write = curr_frame + i
                     # NOTE: This is now an asynchronous call. It submits the task to the background
-                    # thread and the main loop continues immediately without waiting.[1]
-                    self.memory_update_executor.submit(
+                    # thread and the main loop continues immediately without waiting.
+                    future = self.memory_update_executor.submit(
                         self.vggt_retriever.add_view_to_memory,
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+                    self.pending_memory_futures.append(future)
 
             curr_frame += horizon
             pbar.update(horizon)
+
+        # --- WAIT FOR FINAL MEMORY UPDATES TO COMPLETE ---
+        # Ensure all pending memory updates are completed before ending validation
+        if self.condition_index_method.lower() == "vggt_surfel":
+            self._wait_for_memory_updates()
 
         # Decode final predictions and ground truth for evaluation
         xs_pred_decoded = self.decode(xs_pred[n_context_frames:].to(self.device)).cpu()
@@ -1081,11 +1107,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
         
             # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                self.memory_update_executor.submit(
+                future = self.memory_update_executor.submit(
                     self.vggt_retriever.add_view_to_memory,
                     first_frame.clone(),
                     new_c2w_mat.clone()
                 )
+                self.pending_memory_futures.append(future)
             elif self.condition_index_method.lower() == "dinov3":
                 memory_raw_frames = first_frame[None, None].cpu()
             else:
@@ -1169,6 +1196,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
             start_frame = max(0, curr_frame + next_horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + next_horizon})
 
+            # --- WAIT FOR MEMORY UPDATES TO COMPLETE ---
+            # Ensure all pending memory updates are completed before reading from memory
+            if self.condition_index_method.lower() == "vggt_surfel":
+                self._wait_for_memory_updates()
+
             # Handle condition similarity logic
             random_idx = None
             if memory_condition_length:
@@ -1229,11 +1261,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 decoded_chunk = self.decode(newly_generated_latents.to(device))
                 for i in range(next_horizon):
                     frame_idx_to_write = curr_frame + i
-                    self.memory_update_executor.submit(
+                    future = self.memory_update_executor.submit(
                         self.vggt_retriever.add_view_to_memory,
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+                    self.pending_memory_futures.append(future)
 
             curr_frame += next_horizon
             pbar.update(next_horizon)
