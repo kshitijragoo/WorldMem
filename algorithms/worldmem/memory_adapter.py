@@ -17,9 +17,11 @@ from omegaconf import OmegaConf
 # the utils.util is in the folder CITS4010-4011vmem/utils/util.py
 # we are in the folder CITS4010-4011
 # so we need to go up one level to get to the vmem folder and then import the utils.util
-# vmem_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "vmem"))
-# if vmem_path not in sys.path:
-#     sys.path.insert(0, vmem_path)
+# Add the project root to the path so 'vmem' can be found as a package
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
 
 from vmem.modeling.pipeline import VMemPipeline
 
