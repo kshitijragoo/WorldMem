@@ -12,12 +12,7 @@ optimizer_beta: [0.9, 0.99]
 action_cond_dim: 25
 use_plucker: true
 
-<<<<<<< Updated upstream
 # condition_index_method: fov  # options: fov, knn, dinov3, vggt_surfel, surfel
-=======
-# condition_index_method: fov  # options: fov, knn, dinov3, vggt_surfel
-condition_index_method: vggt_surfel  # Use VGGT-based surfel memory retrieval
->>>>>>> Stashed changes
 
 diffusion:
   # training
