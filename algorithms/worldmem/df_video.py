@@ -1176,17 +1176,27 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     print(f"C2W mat: {c2w_mat[curr_frame, 0]}")
                     target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame, 0])]
                     print(f"Target poses: {target_poses}")
-                    
+
                     
                     context_info = self.vmem_adapter.get_context_info(target_poses)
                     print(f"Context info: {context_info}")
 
                     if 'context_time_indices' in context_info:
                         print("Context indices found")
-                        context_indices = context_info['context_time_indices'].cpu().numpy()
-                        random_idx = torch.tensor(context_indices).unsqueeze(1)
-                        print(f"Context indices: {context_indices}")
+                        print(f"Context indices: {context_info['context_time_indices']}")
+                        print(f"Context indices type: {type(context_info['context_time_indices'])}")
+                        context_indices = context_info['context_time_indices']
+                        if torch.is_tensor(context_indices):
+                            context_indices_np = context_indices.detach().cpu().numpy()
+                        elif isinstance(context_indices, (list, tuple)):
+                            context_indices_np = np.array(list(context_indices), dtype=int)
+                        else:
+                            context_indices_np = np.arange(max(0, curr_frame - memory_condition_length), curr_frame, dtype=int)
+                        random_idx = torch.tensor(context_indices_np).unsqueeze(1)
+                        print(f"Context indices: {context_indices_np}")
+                        print("context indices shape: ", context_indices_np.shape)
                         print(f"Random idx: {random_idx}")
+                        print("Random idx shape: ", random_idx.shape)
                     else:
                         print("No context indices found, falling back to recent frames")
                         # Fallback to recent frames
@@ -1194,7 +1204,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         random_idx = torch.tensor(recent_indices).unsqueeze(1)
 
                         print(f"Recent indices: {recent_indices}")
+                        print("Recent indices shape: ", recent_indices.shape)
                         print(f"Random idx: {random_idx}")
+                        print("Random idx shape: ", random_idx.shape)
 
                     
                 elif self.condition_index_method.lower() == "knn":
