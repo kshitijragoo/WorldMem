@@ -1185,28 +1185,43 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         print("Context indices found")
                         print(f"Context indices: {context_info['context_time_indices']}")
                         print(f"Context indices type: {type(context_info['context_time_indices'])}")
+
                         context_indices = context_info['context_time_indices']
                         if torch.is_tensor(context_indices):
+                            print("Tensor type of context indices")
                             context_indices_np = context_indices.detach().cpu().numpy()
                         elif isinstance(context_indices, (list, tuple)):
+                            print("List type of context indices")
                             context_indices_np = np.array(list(context_indices), dtype=int)
                         else:
+                            # fallback if unexpected type
+                            print("Unexpected type of context indices")
                             context_indices_np = np.arange(max(0, curr_frame - memory_condition_length), curr_frame, dtype=int)
-                        random_idx = torch.tensor(context_indices_np).unsqueeze(1)
-                        print(f"Context indices: {context_indices_np}")
-                        print("context indices shape: ", context_indices_np.shape)
-                        print(f"Random idx: {random_idx}")
-                        print("Random idx shape: ", random_idx.shape)
+
+                        # ---  ---
+                        # Pad the retrieved indices to ensure the correct length for the diffusion model.
+                        num_retrieved = len(context_indices_np)
+                        if num_retrieved < memory_condition_length:
+                            print(f"Padding context indices from {num_retrieved} to {memory_condition_length}.")
+                            # Use the last available index for padding. If none, use 0.
+                            padding_value = context_indices_np[-1] if num_retrieved > 0 else 0
+                            padding_array = np.full(memory_condition_length - num_retrieved, padding_value, dtype=int)
+                            context_indices_np = np.concatenate([context_indices_np, padding_array])
+                        
+                        # Ensure the array is not longer than required
+                        context_indices_np = context_indices_np[:memory_condition_length]
+                        # ---  ---
+                        random_idx = torch.tensor(context_indices_np, dtype=torch.long).unsqueeze(1)
+                        print(f"Final random_idx shape: {random_idx.shape}")
+
                     else:
                         print("No context indices found, falling back to recent frames")
-                        # Fallback to recent frames
+                        # Fallback to recent frames, ensuring correct length
                         recent_indices = list(range(max(0, curr_frame - memory_condition_length), curr_frame))
-                        random_idx = torch.tensor(recent_indices).unsqueeze(1)
-
-                        print(f"Recent indices: {recent_indices}")
-                        print("Recent indices shape: ", recent_indices.shape)
-                        print(f"Random idx: {random_idx}")
-                        print("Random idx shape: ", random_idx.shape)
+                        while len(recent_indices) < memory_condition_length:
+                            recent_indices.insert(0, recent_indices[0] if recent_indices else 0) # Pad with first available index
+                        random_idx = torch.tensor(recent_indices[-memory_condition_length:], dtype=torch.long).unsqueeze(1)
+                        print(f"Fallback random_idx shape: {random_idx.shape}")
 
                     
                 elif self.condition_index_method.lower() == "knn":
@@ -1226,7 +1241,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     )
                     print(f"Random idx: {random_idx}")
                     print("Random idx shape: ", random_idx.shape)
-                    
+
                 
                 xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
 
