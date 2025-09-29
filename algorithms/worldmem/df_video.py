@@ -1172,8 +1172,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
                     print("Using VMem for condition index")
+                    print("Converting c2w mat to vmem pose")
+                    print(f"C2W mat: {c2w_mat[curr_frame, 0]}")
                     target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame, 0])]
                     print(f"Target poses: {target_poses}")
+                    
                     
                     context_info = self.vmem_adapter.get_context_info(target_poses)
                     print(f"Context info: {context_info}")
