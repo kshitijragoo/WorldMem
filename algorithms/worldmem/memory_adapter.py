@@ -97,6 +97,26 @@ class VMemAdapter:
         self.current_frames = [pil_frame]
         
         return image
+
+
+    def add_frame(self, image: torch.Tensor, camera_pose: np.ndarray, K: np.ndarray):
+        """
+        Adds a single generated frame to the VMem pipeline's memory.
+        
+        Args:
+            image: The generated image tensor [1, 3, H, W] in range [0, 1]
+            camera_pose: Camera-to-world matrix [4, 4]
+            K: Camera intrinsic matrix [3, 3]
+        """
+        if not self.is_initialized:
+            raise RuntimeError("Pipeline must be initialized before adding frames.")
+        
+        # The image should already be in the correct format from WorldMem's decoder
+        self.pipeline.add_frame(image, camera_pose, K)
+        
+        # Update the adapter's own frame list for consistency
+        self.current_frames.append(tensor_to_pil(image))
+
     
     def generate_trajectory_frames(self, c2ws: List[np.ndarray], Ks: List[np.ndarray],
                                  use_non_maximum_suppression: Optional[bool] = None) -> List:

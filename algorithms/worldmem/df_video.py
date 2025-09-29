@@ -1275,14 +1275,38 @@ class WorldMemMinecraft(DiffusionForcingBase):
             newly_generated_latents_all.append(newly_generated_latents)
 
             # --- WRITE TO VMEM MEMORY (Incremental) ---
+            # if self.condition_index_method.lower() == "vggt_surfel":
+            #     print("Writing to VMem memory")
+            #     # Generate trajectory frames using VMem
+            #     new_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(next_horizon)]
+            #     new_Ks = [self.vmem_adapter.pipeline.Ks[0]] * next_horizon
+            #     print(f"New poses: {new_poses}")
+            #     print(f"New Ks: {new_Ks}")
+            #     self.vmem_adapter.generate_trajectory_frames(new_poses, new_Ks)
+
             if self.condition_index_method.lower() == "vggt_surfel":
-                print("Writing to VMem memory")
-                # Generate trajectory frames using VMem
-                new_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(next_horizon)]
-                new_Ks = [self.vmem_adapter.pipeline.Ks[0]] * next_horizon
-                print(f"New poses: {new_poses}")
-                print(f"New Ks: {new_Ks}")
-                self.vmem_adapter.generate_trajectory_frames(new_poses, new_Ks)
+                print("Writing newly generated WorldMem frames to VMem memory...")
+                
+                # Decode each newly generated latent and add it to the memory bank one by one
+                for i in range(next_horizon):
+                    # Decode the single latent frame
+                    decoded_frame = self.decode(newly_generated_latents[i:i+1].to(self.device)).cpu()
+                    
+                    # Prepare data for the adapter
+                    vmem_formatted_image = convert_worldmem_image_to_vmem(decoded_frame.squeeze(0))
+                    pose_to_add = convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0])
+                    # Assume intrinsics (K) are constant for now, using the first one
+                    K_to_add = self.vmem_adapter.pipeline.Ks[0] 
+
+                    print(f"Decoded frame: {decoded_frame.shape}")
+                    print(f"VMem formatted image: {vmem_formatted_image.shape}")
+                    print(f"Pose to add: {pose_to_add}")
+                    print(f"K to add: {K_to_add}")
+
+                    # Call the new "add_frame" method
+                    self.vmem_adapter.add_frame(vmem_formatted_image.unsqueeze(0), pose_to_add, K_to_add)
+
+
 
             curr_frame += next_horizon
             pbar.update(next_horizon)
