@@ -1224,6 +1224,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
+                    print(f"Random idx: {random_idx}")
+                    print("Random idx shape: ", random_idx.shape)
+                    
                 
                 xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
 
