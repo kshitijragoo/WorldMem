@@ -26,6 +26,8 @@ import requests
 from huggingface_hub import model_info
 
 
+TEST_MODE = any(arg in ["-test", "--test", "test"] for arg in sys.argv[1:])
+
 def is_huggingface_model(path: str) -> bool:
     hf_ckpt = str(path).split('/')
     repo_id = '/'.join(hf_ckpt[:2])
@@ -687,4 +689,29 @@ with gr.Blocks(css=css) as demo:
     slider_next_frame_length.change(fn=set_next_frame_length, inputs=[slider_next_frame_length, sampling_next_frame_length_state], outputs=sampling_next_frame_length_state)
     dropdown_condition_index_method.change(fn=set_condition_index_method, inputs=[dropdown_condition_index_method, condition_index_method_state], outputs=condition_index_method_state)
 
-demo.launch(share=True)
+# If running in test mode, perform a headless generation and exit
+if TEST_MODE:
+    print("[Test] Starting headless initialization and generation...")
+    # Ensure initialization is complete (synchronous above)
+    test_image = ICE_PLAINS_IMAGE
+    test_actions = "AAAAADDDDD"
+
+    # Initialize states using the same reset flow as UI
+    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = reset(test_image)
+
+    # Run one generation with the specified actions
+    last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = generate(
+        test_actions,
+        input_history,
+        video_frames,
+        memory_latent_frames,
+        memory_actions,
+        memory_poses,
+        memory_c2w,
+        memory_frame_idx,
+        memory_raw_frames,
+    )
+
+    print(f"[Test] Generation complete. Video saved at: {temporal_video_path}")
+else:
+    demo.launch(share=True)
