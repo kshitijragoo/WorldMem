@@ -57,7 +57,7 @@ def test_vmem_pipeline_imports():
     
     try:
         # This should not fail with CUT3R import errors
-        from modeling.pipeline import VMemPipeline
+        from vmem.modeling.pipeline import VMemPipeline
         print("✓ VMemPipeline import successful")
         return True
         
