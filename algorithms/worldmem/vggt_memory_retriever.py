@@ -1,10 +1,28 @@
 import torch
 import numpy as np
 from scipy.spatial import KDTree
-from vggt.vggt.models.vggt import VGGT
-from.geometry_utils import unproject_depth_to_pointcloud, pointcloud_to_surfels
-from vggt.vggt.utils.pose_enc import pose_encoding_to_extri_intri
+import os
+import sys
 import torch.nn.functional as F
+
+# Robust imports for VGGT package structure
+try:
+    from vggt.vggt.models.vggt import VGGT  # layout: <repo_root>/vggt/vggt/models/vggt.py
+    from vggt.vggt.utils.pose_enc import pose_encoding_to_extri_intri
+except ModuleNotFoundError:
+    try:
+        from vggt.models.vggt import VGGT  # layout: sys.path includes inner vggt/ already
+        from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+    except ModuleNotFoundError:
+        # Add inner vggt/ directory to path and retry
+        this_dir = os.path.dirname(__file__)
+        inner_vggt_path = os.path.abspath(os.path.join(this_dir, "../../../vggt"))
+        if inner_vggt_path not in sys.path:
+            sys.path.insert(0, inner_vggt_path)
+        from vggt.models.vggt import VGGT
+        from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+
+from.geometry_utils import unproject_depth_to_pointcloud, pointcloud_to_surfels
 
 class VGGTMemoryRetriever:
     """
