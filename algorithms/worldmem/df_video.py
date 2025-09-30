@@ -405,6 +405,19 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         
             
+    def _wait_for_memory_updates(self):
+        """
+        Wait for all pending asynchronous memory update tasks to complete.
+        For the VGGT-based retriever, memory writes are dispatched to a
+        ThreadPoolExecutor. We block until all tasks finish, then recreate
+        the executor so it can accept new tasks afterwards.
+        """
+        if hasattr(self, 'memory_update_executor'):
+            # Wait for completion of all queued tasks and close the executor
+            self.memory_update_executor.shutdown(wait=True)
+            # Recreate a fresh single-worker executor for subsequent updates
+            self.memory_update_executor = ThreadPoolExecutor(max_workers=1)
+
     def _build_model(self):
 
         self.diffusion_model = Diffusion(
@@ -955,6 +968,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     xs_raw[i, 0].clone(),
                     c2w_mat[i, 0].clone()
                 )
+            # Ensure context writes are visible before any retrieval
+            self._wait_for_memory_updates()
 
         curr_frame = n_context_frames
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
@@ -981,6 +996,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             random_idx = None
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
+                    # Make sure any previous writes are flushed before retrieval
+                    self._wait_for_memory_updates()
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
                         target_pose_c2w, k=memory_condition_length, image_size=xs_raw.shape[-2:]
@@ -1045,6 +1062,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+                # # Optional: wait here to ensure writes are visible for the next iteration's retrieval
+                # self._wait_for_memory_updates()
 
             curr_frame += horizon
             pbar.update(horizon)
@@ -1086,6 +1105,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     first_frame.clone(),
                     new_c2w_mat.clone()
                 )
+                # Ensure the very first write is visible before any retrievals
+                self._wait_for_memory_updates()
             elif self.condition_index_method.lower() == "dinov3":
                 memory_raw_frames = first_frame[None, None].cpu()
             else:
@@ -1174,6 +1195,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if memory_condition_length:
                 if self.condition_index_method.lower() == "vggt_surfel":
                     print("Using vggt_surfel for condition index")
+                    # Flush writes prior to retrieving context
+                    self._wait_for_memory_updates()
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
                     random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
@@ -1234,6 +1257,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         decoded_chunk[i, 0].clone(),
                         c2w_mat[frame_idx_to_write, 0].clone()
                     )
+                # # Make writes available before next retrieval cycle
+                # self._wait_for_memory_updates()
 
             curr_frame += next_horizon
             pbar.update(next_horizon)
