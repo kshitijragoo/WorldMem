@@ -391,6 +391,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
             print("Initializing VMem surfel-based memory system.")
             # Force CUDA device (self.device might still be 'cpu' during __init__)
             vggt_device = "cuda" if torch.cuda.is_available() else "cpu"
+            
+            # Enable deterministic mode for VGGT to reduce artifacts
+            if vggt_device == "cuda":
+                torch.backends.cudnn.deterministic = True
+                torch.backends.cudnn.benchmark = False
+                print("[VGGT] Enabled deterministic CUDA mode for consistency")
+            
             self.vmem_adapter = VMemAdapter(device=vggt_device)
             print(f"VMem adapter initialized on device: {vggt_device}")
             # VMem handles memory updates internally, no need for separate executor
