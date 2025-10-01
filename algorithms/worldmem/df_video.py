@@ -1212,7 +1212,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         pbar = tqdm(total=len(new_actions), initial=0, desc="Interactive Sampling")
 
         # Predict all future poses at once
-        new_pose_condition_list =
+        new_pose_condition_list = []
         last_frame = xs_pred[-1].clone()
         last_pose_condition = memory_poses[-1].clone()
         for hi in range(len(new_actions)):
@@ -1227,7 +1227,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         new_pose_condition_list = torch.cat(new_pose_condition_list, 0)
         
         ai = 0
-        newly_generated_latents_all =
+        newly_generated_latents_all = []
 
         while ai < len(new_actions):
             next_horizon = min(horizon, len(new_actions) - ai)
