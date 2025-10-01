@@ -95,18 +95,48 @@ class VGGTMemoryRetriever:
             predictions = self.vggt_model(vggt_input)
         print(f"[add_view_to_memory] predictions keys: {list(predictions.keys())}")
 
-        depth = predictions["depth"]
-        pose_enc = predictions["pose_enc"]
-        print("[add_view_to_memory] depth:", f"shape={tuple(depth.shape)}, dtype={depth.dtype}, device={depth.device}")
-        print("[add_view_to_memory] pose_enc:", f"shape={tuple(pose_enc.shape)}, dtype={pose_enc.dtype}, device={pose_enc.device}")
+        depth_pred = predictions["depth"]
+        pose_enc_pred = predictions["pose_enc"]
+        # Canonicalize shapes: depth -> [B,1,H,W] float32, pose_enc -> [B,9] float32
+        if depth_pred.ndim == 5:  # [B,S,H,W,1] or [B,S,H,W,C]
+            if depth_pred.shape[-1] == 1:
+                depth_b1hw = depth_pred[:, -1:, ..., 0]
+            else:
+                depth_b1hw = depth_pred[:, -1:, ...]
+        elif depth_pred.ndim == 4:  # [B,S,H,W] or [B,1,H,W]
+            if depth_pred.shape[1] == 1:
+                depth_b1hw = depth_pred
+            else:
+                depth_b1hw = depth_pred[:, -1:, ...]
+        elif depth_pred.ndim == 3:  # [B,H,W]
+            depth_b1hw = depth_pred.unsqueeze(1)
+        else:
+            raise ValueError(f"Unexpected depth shape: {tuple(depth_pred.shape)}")
+        depth_b1hw = depth_b1hw.to(self.device, dtype=torch.float32)
+
+        if pose_enc_pred.ndim == 3:  # [B,S,9]
+            pose_enc_b9 = pose_enc_pred[:, -1, :]
+        elif pose_enc_pred.ndim == 2:  # [B,9]
+            pose_enc_b9 = pose_enc_pred
+        else:
+            raise ValueError(f"Unexpected pose_enc shape: {tuple(pose_enc_pred.shape)}")
+        pose_enc_b9 = pose_enc_b9.to(self.device, dtype=torch.float32)
+
+        print("[add_view_to_memory] depth_b1hw:", f"shape={tuple(depth_b1hw.shape)}, dtype={depth_b1hw.dtype}, device={depth_b1hw.device}")
+        print("[add_view_to_memory] pose_enc_b9:", f"shape={tuple(pose_enc_b9.shape)}, dtype={pose_enc_b9.dtype}, device={pose_enc_b9.device}")
 
         # 2. Unproject depth to get accurate point cloud [1, 1]
-        pointcloud = unproject_depth_to_pointcloud(depth, pose_enc, (new_h, new_w))
+        pointcloud_bhw3 = unproject_depth_to_pointcloud(depth_b1hw, pose_enc_b9, (new_h, new_w))
+        # Select first (and only) batch
+        pointcloud = pointcloud_bhw3[0]
         print("[add_view_to_memory] pointcloud:", f"shape={tuple(pointcloud.shape)}, dtype={pointcloud.dtype}, device={pointcloud.device}")
         
         # 3. Convert point cloud to surfels [1, 1]
-        extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc, (new_h, new_w))
-        camera_params = {'extrinsics': extrinsics, 'intrinsics': intrinsics}
+        # Build single-frame camera params from pose encoding (ensure S dim exists for API, then select)
+        extrinsics_b13x4, intrinsics_b13x3 = pose_encoding_to_extri_intri(pose_enc_b9.unsqueeze(1), (new_h, new_w))
+        extrinsics_3x4 = extrinsics_b13x4[0, 0].to(self.device, dtype=torch.float32)
+        intrinsics_3x3 = intrinsics_b13x3[0, 0].to(self.device, dtype=torch.float32)
+        camera_params = {'extrinsics': extrinsics_3x4, 'intrinsics': intrinsics_3x3}
         new_positions, new_normals, new_radii = pointcloud_to_surfels(
             pointcloud, camera_params, self.downsample_factor
         )

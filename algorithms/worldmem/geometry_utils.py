@@ -65,17 +65,19 @@ def pointcloud_to_surfels(pointcloud, camera_params, downsample_factor=4, alpha=
     # This avoids a costly k-NN search [6, 7]
     dx = points_down[1:-1, 2:, :] - points_down[1:-1, :-2, :]
     dy = points_down[2:, 1:-1, :] - points_down[:-2, 1:-1, :]
-    normals = F.normalize(torch.cross(dx[:, :-2], dy[:-2, :], dim=-1), p=2, dim=-1)
-    
-    # Pad to match original downsampled dimensions
+    # Cross product per interior point
+    normals_core = torch.cross(dx[:, 1:-1, :], dy[1:-1, :, :], dim=-1)
+    normals_core = F.normalize(normals_core, p=2, dim=-1)
+
+    # Pad normals back to match positions shape
     positions = points_down[1:-1, 1:-1, :]
-    normals = F.pad(normals, (0, 0, 1, 1, 1, 1))
+    normals = F.pad(normals_core, (0, 0, 1, 1, 1, 1))
 
     # 3. Calculate radii using the VMem heuristic [1, 1]
-    extrinsics = camera_params['extrinsics'] # Assuming batch size of 1 for this operation
-    intrinsics = camera_params['intrinsics']
+    extrinsics = camera_params['extrinsics'] # 3x4
+    intrinsics = camera_params['intrinsics'] # 3x3
     cam_center = -torch.matmul(extrinsics[:3, :3].T, extrinsics[:3, 3])
-    focal_length = (intrinsics + intrinsics[1, 1]) / 2
+    focal_length = (intrinsics[0, 0] + intrinsics[1, 1]) / 2.0
     
     view_dirs = F.normalize(positions - cam_center.view(1, 1, 3), p=2, dim=-1)
     depths = torch.linalg.norm(positions - cam_center.view(1, 1, 3), dim=-1)
