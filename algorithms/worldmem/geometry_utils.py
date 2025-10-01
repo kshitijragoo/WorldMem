@@ -1,88 +1,126 @@
-# algorithms/worldmem/geometry_utils.py
+# worldmem/algorithms/worldmem/geometry_utils.py
 
 import torch
-import torch.nn.functional as F
 import numpy as np
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
-def unproject_depth_to_pointcloud(depth_map, pose_enc, image_size_hw):
+
+# Import core geometric functions directly from the vggt library
+# This ensures that all transformations are consistent with the VGGT model's native conventions.
+from vggt.utils.rotation import quat_to_mat, mat_to_quat
+from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+from vggt.utils.geometry import (
+    unproject_depth_map_to_point_map,
+    project_world_points_to_cam,
+    depth_to_world_coords_points,
+)
+
+def get_camera_matrices_from_pose_encoding(pose_encoding, image_size_hw):
     """
-    Unprojects a depth map to a 3D point cloud using VGGT's camera outputs.
-    This is the more accurate method for geometry acquisition, as recommended by the VGGT paper.[1, 1]
+    Wrapper function to decode a 9D pose vector into extrinsic and intrinsic matrices.
 
     Args:
-        depth_map (torch.Tensor): Depth map of shape (B, 1, H, W).
-        pose_enc (torch.Tensor): VGGT's 9D pose encoding of shape (B, 9).
+        pose_encoding (torch.Tensor): VGGT's 9D pose encoding.
+                                      Shape can be (B, S, 9) or (S, 9) or (9,).
+        image_size_hw (tuple): Tuple of (height, width) of the image.
+
+    Returns:
+        tuple: (extrinsics, intrinsics) as torch.Tensors.
+    """
+    # Ensure at least 2 dimensions (Sequence, Dims) for the library function
+    original_shape = pose_encoding.shape
+    if pose_encoding.dim() == 1:
+        pose_encoding = pose_encoding.unsqueeze(0)
+    if pose_encoding.dim() == 2:
+        pose_encoding = pose_encoding.unsqueeze(0) # Add a batch dimension
+
+    extrinsics, intrinsics = pose_encoding_to_extri_intri(
+        pose_encoding,
+        image_size_hw=image_size_hw,
+        pose_encoding_type="absT_quaR_FoV"
+    )
+
+    # Restore original batch/sequence dimensions
+    if len(original_shape) == 1:
+        extrinsics = extrinsics.squeeze(0).squeeze(0)
+        intrinsics = intrinsics.squeeze(0).squeeze(0)
+    elif len(original_shape) == 2:
+        extrinsics = extrinsics.squeeze(0)
+        intrinsics = intrinsics.squeeze(0)
+        
+    return extrinsics, intrinsics
+
+def unproject_depth_to_points(depth_map, pose_encoding, image_size_hw):
+    """
+    Unprojects a depth map to a 3D point map in the world coordinate frame.
+    This function is critical for creating the surfel memory bank and uses the principle
+    that unprojecting from VGGT's predicted depth and camera is more accurate than
+    using its direct point map head.
+
+    Args:
+        depth_map (torch.Tensor): The depth map of shape (H, W) or (S, H, W).
+        pose_encoding (torch.Tensor): The 9D pose encoding for the camera(s).
         image_size_hw (tuple): The (height, width) of the image.
 
     Returns:
-        torch.Tensor: Point cloud of shape (B, H, W, 3) in world coordinates.
+        torch.Tensor: The 3D point map in world coordinates, shape (S, H, W, 3).
     """
-    B, _, H, W = depth_map.shape
-    device = depth_map.device
+    extrinsics, intrinsics = get_camera_matrices_from_pose_encoding(pose_encoding, image_size_hw)
 
-    # Get camera extrinsics (world-to-camera) and intrinsics from VGGT's output [2, 1]
-    extrinsics, intrinsics = pose_encoding_to_extri_intri(pose_enc, image_size_hw)
-    
-    # Create a grid of pixel coordinates
-    y, x = torch.meshgrid(
-        torch.arange(H, device=device, dtype=torch.float32),
-        torch.arange(W, device=device, dtype=torch.float32),
-        indexing="ij"
+    # The library function expects numpy arrays.
+    depth_np = depth_map.cpu().numpy()
+    extrinsics_np = extrinsics.cpu().numpy()
+    intrinsics_np = intrinsics.cpu().numpy()
+
+    # Ensure batch dimension for the library function
+    if depth_np.ndim == 2:
+        depth_np = depth_np[np.newaxis, :, :]
+    if extrinsics_np.ndim == 2:
+         extrinsics_np = extrinsics_np[np.newaxis, :, :]
+    if intrinsics_np.ndim == 2:
+         intrinsics_np = intrinsics_np[np.newaxis, :, :]
+
+
+    # Call the validated library function for unprojection.
+    world_points_np = unproject_depth_map_to_point_map(
+        depth_map=depth_np,
+        extrinsics_cam=extrinsics_np,
+        intrinsics_cam=intrinsics_np
     )
-    pixels = torch.stack([x, y, torch.ones_like(x)], dim=-1).expand(B, -1, -1, -1) # Shape: (B, H, W, 3)
 
-    # Unproject: 2D pixel -> 3D camera coordinates
-    # P_cam = K_inv * [u, v, 1] * Z [3, 1, 4]
-    cam_coords = torch.matmul(torch.linalg.inv(intrinsics).unsqueeze(1).unsqueeze(1), pixels.unsqueeze(-1)).squeeze(-1)
-    cam_coords = cam_coords * depth_map.permute(0, 2, 3, 1) # Shape: (B, H, W, 3)
+    return torch.from_numpy(world_points_np).to(depth_map.device)
 
-    # Transform: 3D camera coordinates -> 3D world coordinates
-    # P_world = R_inv * (P_cam - t)
-    R_inv = torch.linalg.inv(extrinsics[:, :3, :3])
-    t = extrinsics[:, :3, 3]
-    world_coords = torch.matmul(R_inv.unsqueeze(1).unsqueeze(1), (cam_coords - t.view(B, 1, 1, 3)).unsqueeze(-1)).squeeze(-1)
-
-    return world_coords
-
-def pointcloud_to_surfels(pointcloud, camera_params, downsample_factor=4, alpha=0.2):
+def project_points_to_camera(world_points, pose_encoding, image_size_hw):
     """
-    Converts a dense point cloud into a set of surfels, calculating position, normal, and radius.[1, 1]
+    Projects 3D world points into a camera's 2D image plane and returns their
+    camera-space coordinates.
 
     Args:
-        pointcloud (torch.Tensor): Point cloud of shape (H, W, 3).
-        camera_params (dict): Dictionary containing 'extrinsics' and 'intrinsics'.
-        downsample_factor (int): Factor to downsample the point cloud for efficiency.
-        alpha (float): Constant for radius calculation heuristic from VMem.[1]
+        world_points (torch.Tensor): 3D points of shape (N, 3).
+        pose_encoding (torch.Tensor): The 9D pose encoding for the target camera.
+        image_size_hw (tuple): The (height, width) of the image.
 
     Returns:
-        tuple: A tuple of (positions, normals, radii) for the surfels.
+        tuple:
+            - torch.Tensor: 2D pixel coordinates of shape (N, 2).
+            - torch.Tensor: 3D camera-space coordinates of shape (N, 3).
     """
-    # 1. Downsample the point cloud
-    points_down = pointcloud[::downsample_factor, ::downsample_factor, :]
-    
-    # 2. Calculate normals using the grid structure for efficiency [5, 1]
-    # This avoids a costly k-NN search [6, 7]
-    dx = points_down[1:-1, 2:, :] - points_down[1:-1, :-2, :]
-    dy = points_down[2:, 1:-1, :] - points_down[:-2, 1:-1, :]
-    # Cross product per interior point
-    normals_core = torch.cross(dx[:, 1:-1, :], dy[1:-1, :, :], dim=-1)
-    normals_core = F.normalize(normals_core, p=2, dim=-1)
+    extrinsics, intrinsics = get_camera_matrices_from_pose_encoding(pose_encoding, image_size_hw)
 
-    # Pad normals back to match positions shape
-    positions = points_down[1:-1, 1:-1, :]
-    normals = F.pad(normals_core, (0, 0, 1, 1, 1, 1))
+    # The library function expects batch dimension for camera parameters
+    if extrinsics.dim() == 2:
+        extrinsics = extrinsics.unsqueeze(0)
+    if intrinsics.dim() == 2:
+        intrinsics = intrinsics.unsqueeze(0)
 
-    # 3. Calculate radii using the VMem heuristic [1, 1]
-    extrinsics = camera_params['extrinsics'] # 3x4
-    intrinsics = camera_params['intrinsics'] # 3x3
-    cam_center = -torch.matmul(extrinsics[:3, :3].T, extrinsics[:3, 3])
-    focal_length = (intrinsics[0, 0] + intrinsics[1, 1]) / 2.0
+    # Call the validated library function for projection.
+    image_points, cam_points = project_world_points_to_cam(
+        world_points=world_points,
+        cam_extrinsics=extrinsics,
+        cam_intrinsics=intrinsics
+    )
     
-    view_dirs = F.normalize(positions - cam_center.view(1, 1, 3), p=2, dim=-1)
-    depths = torch.linalg.norm(positions - cam_center.view(1, 1, 3), dim=-1)
-    
-    cos_angle = torch.sum(normals * view_dirs, dim=-1).abs()
-    radii = (0.5 * depths / focal_length) / (alpha + (1 - alpha) * cos_angle)
+    # cam_points is (B, 3, N), transpose to (B, N, 3) for easier indexing
+    cam_points = cam_points.transpose(1, 2)
 
-    return positions.reshape(-1, 3), normals.reshape(-1, 3), radii.reshape(-1)
+    # Squeeze batch dimension from result
+    return image_points.squeeze(0), cam_points.squeeze(0)
