@@ -1100,11 +1100,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
         
             # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
+                print("Submitting first frame to memory")
                 self.memory_update_executor.submit(
                     self.vggt_retriever.add_view_to_memory,
                     first_frame.clone(),
                     new_c2w_mat.clone()
                 )
+                print("Submitted first frame to memory")
                 # Ensure the very first write is visible before any retrievals
                 self._wait_for_memory_updates()
             elif self.condition_index_method.lower() == "dinov3":
@@ -1199,7 +1201,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     self._wait_for_memory_updates()
                     target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
                     retrieved_indices = self.vggt_retriever.retrieve_relevant_views(target_pose_c2w, k=memory_condition_length)
+                    print(f"Retrieved indices: {retrieved_indices}")
                     random_idx = torch.tensor(retrieved_indices).unsqueeze(1)
+                    print(f"Random indices: {random_idx}")
                 elif self.condition_index_method.lower() == "knn":
                     print("Using knn for condition index")
                     random_idx = self._generate_condition_indices_knn(
