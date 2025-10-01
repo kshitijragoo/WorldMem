@@ -972,6 +972,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
         from_noise_levels = torch.from_numpy(from_noise_levels).to(self.device)
         to_noise_levels = torch.from_numpy(to_noise_levels).to(self.device)
         return from_noise_levels, to_noise_levels
+
+
     def validation_step(self, batch, batch_idx, namespace="validation") -> STEP_OUTPUT:
         """
         Perform a single validation step.
@@ -1125,3 +1127,265 @@ class WorldMemMinecraft(DiffusionForcingBase):
             xs_pred = torch.cat([xs_pred, newly_generated_latents], 0)
 
             # --- ASYNCHRONOUS WRITE TO MEMORY
+
+    @torch.no_grad()
+    def interactive(self, first_frame, new_actions, first_pose, device,
+                    memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames):
+    
+        memory_condition_length = self.memory_condition_length
+
+        if memory_latent_frames is None:
+            first_frame = torch.from_numpy(first_frame)
+            new_actions = torch.from_numpy(new_actions)
+            first_pose = torch.from_numpy(first_pose)
+            
+            # Encode the first frame to get its latent
+            first_frame_encode = self.encode(first_frame[None, None].to(device))
+            
+            # Initialize all memory components
+            memory_latent_frames = first_frame_encode.cpu()
+            memory_actions = new_actions[None, None].to(device)
+            memory_poses = first_pose[None, None].to(device)
+            new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
+            memory_c2w = new_c2w_mat[None, None].to(device)
+            memory_frame_idx = torch.tensor([]).to(device)
+        
+            # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
+            if self.condition_index_method.lower() == "vggt_surfel":
+                print("Submitting first frame to memory")
+                image_size_hw = first_frame.shape[-2:]
+                
+                # Convert c2w to VGGT's 9D pose encoding
+                pose_encoding = convert_c2w_to_vggt_pose_encoding(
+                    new_c2w_mat.clone(), self.focal_length, image_size_hw
+                )
+                
+                # CRITICAL: Placeholder for depth map. This must be replaced with actual depth estimation.
+                placeholder_depth_map = torch.ones_like(first_frame[0, :, :], device=self.device)
+
+                self.memory_update_executor.submit(
+                    self.vggt_retriever.add_view_to_memory,
+                    view_index=0,
+                    image=first_frame.clone(),
+                    pose_encoding=pose_encoding,
+                    depth_map=placeholder_depth_map,
+                    image_size_hw=image_size_hw
+                )
+                print("Submitted first frame to memory")
+                # Ensure the very first write is visible before any retrievals
+                self._wait_for_memory_updates()
+            elif self.condition_index_method.lower() == "dinov3":
+                memory_raw_frames = first_frame[None, None].cpu()
+            else:
+                memory_raw_frames = None
+
+            return (first_frame.cpu().numpy(), 
+                    memory_latent_frames.cpu().numpy(), 
+                    memory_actions.cpu().numpy(), 
+                    memory_poses.cpu().numpy(), 
+                    memory_c2w.cpu().numpy(), 
+                    memory_frame_idx.cpu().numpy(),
+                    memory_raw_frames.cpu().numpy() if memory_raw_frames is not None else None)
+
+        else:
+            # Load existing memory from numpy arrays
+            memory_latent_frames = torch.from_numpy(memory_latent_frames)
+            if self.condition_index_method.lower() == "dinov3":
+                memory_raw_frames = torch.from_numpy(memory_raw_frames)
+            else:
+                memory_raw_frames = None
+                
+            memory_actions = torch.from_numpy(memory_actions).to(device)
+            memory_poses = torch.from_numpy(memory_poses).to(device)
+            memory_c2w = torch.from_numpy(memory_c2w).to(device)
+            memory_frame_idx = torch.from_numpy(memory_frame_idx).to(device)
+            new_actions = torch.from_numpy(new_actions).to(device)
+
+        curr_frame = 0
+        batch_size = 1
+        horizon = self.next_frame_length
+        # context
+        n_context_frames = len(memory_latent_frames)
+        xs_pred = memory_latent_frames[:n_context_frames].clone()
+        curr_frame += n_context_frames
+
+        pbar = tqdm(total=len(new_actions), initial=0, desc="Interactive Sampling")
+
+        # Predict all future poses at once
+        new_pose_condition_list =
+        last_frame = xs_pred[-1].clone()
+        last_pose_condition = memory_poses[-1].clone()
+        for hi in range(len(new_actions)):
+            last_pose_condition[:,3:] = last_pose_condition[:,3:] // 15
+            new_pose_condition_offset = self.pose_prediction_model(last_frame.to(device), new_actions[None, hi], last_pose_condition)
+            new_pose_condition_offset[:,3:] = torch.round(new_pose_condition_offset[:,3:])
+            new_pose_condition = last_pose_condition + new_pose_condition_offset
+            new_pose_condition[:,3:] = new_pose_condition[:,3:] * 15
+            new_pose_condition[:,3:] %= 360
+            last_pose_condition = new_pose_condition.clone()
+            new_pose_condition_list.append(new_pose_condition[None])
+        new_pose_condition_list = torch.cat(new_pose_condition_list, 0)
+        
+        ai = 0
+        newly_generated_latents_all =
+
+        while ai < len(new_actions):
+            next_horizon = min(horizon, len(new_actions) - ai)
+            
+            # Update memory with new poses and actions for the upcoming chunk
+            new_pose_condition = new_pose_condition_list[ai:ai+next_horizon].clone()
+            new_c2w_mat = euler_to_camera_to_world_matrix(new_pose_condition)
+            curr_actions = new_actions[ai:ai+next_horizon].clone()
+            
+            memory_poses = torch.cat([memory_poses, new_pose_condition])
+            memory_actions = torch.cat([memory_actions, curr_actions[:, None]])
+            memory_c2w = torch.cat([memory_c2w, new_c2w_mat])
+            new_indices = memory_frame_idx[-1,0] + torch.arange(next_horizon, device=memory_frame_idx.device) + 1
+            memory_frame_idx = torch.cat([memory_frame_idx, new_indices[:, None]])
+
+            conditions = memory_actions.clone()
+            pose_conditions = memory_poses.clone()
+            c2w_mat = memory_c2w.clone()
+            frame_idx = memory_frame_idx.clone()
+
+            # Initialize noisy chunk for generation
+            scheduling_matrix = self._generate_scheduling_matrix(next_horizon)
+            chunk = torch.randn((next_horizon, batch_size, *xs_pred.shape[2:]), device=xs_pred.device)
+            chunk = torch.clamp(chunk, -self.clip_noise, self.clip_noise)
+            xs_pred = torch.cat([xs_pred, chunk], 0)
+
+            start_frame = max(0, curr_frame + next_horizon - self.n_tokens)
+            pbar.set_postfix({"start": start_frame, "end": curr_frame + next_horizon})
+
+            # Handle condition similarity logic
+            random_idx = None
+            if memory_condition_length:
+                if self.condition_index_method.lower() == "vggt_surfel":
+                    print("Using vggt_surfel for condition index")
+                    # Flush writes prior to retrieving context
+                    self._wait_for_memory_updates()
+                    target_pose_c2w = c2w_mat[curr_frame, 0].to(self.device)
+                    
+                    # Convert c2w to VGGT's 9D pose encoding
+                    image_size_hw = first_frame.shape[-2:]
+                    target_pose_encoding = convert_c2w_to_vggt_pose_encoding(
+                        target_pose_c2w, self.focal_length, image_size_hw
+                    )
+                    
+                    retrieved_indices = self.vggt_retriever.retrieve_relevant_views(
+                        target_pose_encoding=target_pose_encoding,
+                        image_size_hw=image_size_hw,
+                        top_k=memory_condition_length
+                    )
+                    print(f"Retrieved indices: {retrieved_indices}")
+                    
+                    if retrieved_indices:
+                        while len(retrieved_indices) < memory_condition_length:
+                            retrieved_indices.append(retrieved_indices)
+                        random_idx = torch.tensor(retrieved_indices, device='cpu').unsqueeze(1)
+                    else:
+                        # Fallback if no indices are retrieved
+                        random_idx = self._generate_condition_indices_knn(
+                            curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                        )
+                    print(f"Random indices: {random_idx}")
+
+                elif self.condition_index_method.lower() == "knn":
+                    print("Using knn for condition index")
+                    random_idx = self._generate_condition_indices_knn(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                elif self.condition_index_method.lower() == "dinov3":
+                    print("Using dinov3 for condition index")
+                    random_idx = self._generate_condition_indices_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
+                    )
+                else :
+                    print("Using mc_fov for condition index")
+                    random_idx = self._generate_condition_indices_mc_fov(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                    )
+                
+                xs_pred = torch.cat([xs_pred, xs_pred[random_idx[:, range(xs_pred.shape[1])], range(xs_pred.shape[1])].clone()], 0)
+
+            input_condition, input_pose_condition, frame_idx_list = self._prepare_conditions(
+                start_frame, curr_frame, next_horizon, conditions, pose_conditions, c2w_mat, frame_idx, random_idx,
+                image_width=first_frame.shape[-1], image_height=first_frame.shape[-2]
+            )
+
+            for m in range(scheduling_matrix.shape - 1):
+                from_noise_levels, to_noise_levels = self._prepare_noise_levels(
+                    scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
+                )
+
+                xs_pred[start_frame:] = self.diffusion_model.sample_step(
+                    xs_pred[start_frame:].to(self.device),
+                    input_condition,
+                    input_pose_condition,
+                    from_noise_levels[start_frame:],
+                    to_noise_levels[start_frame:],
+                    current_frame=curr_frame,
+                    mode="validation",
+                    reference_length=memory_condition_length,
+                    frame_idx=frame_idx_list
+                ).cpu()
+
+            # Remove condition similarity frames if applicable
+            if memory_condition_length:
+                xs_pred = xs_pred[:-memory_condition_length]
+
+            newly_generated_latents = xs_pred[curr_frame : curr_frame + next_horizon]
+            newly_generated_latents_all.append(newly_generated_latents)
+
+            # --- ASYNCHRONOUS WRITE TO MEMORY (Incremental) ---
+            if self.condition_index_method.lower() == "vggt_surfel":
+                decoded_chunk = self.decode(newly_generated_latents.to(device))
+                for i in range(next_horizon):
+                    frame_idx_to_write = curr_frame + i
+                    image_size_hw = first_frame.shape[-2:]
+                    
+                    # Convert c2w to VGGT's 9D pose encoding
+                    pose_encoding = convert_c2w_to_vggt_pose_encoding(
+                        c2w_mat[frame_idx_to_write, 0].clone(), self.focal_length, image_size_hw
+                    )
+                    
+                    # CRITICAL: Placeholder for depth map. This must be replaced with actual depth estimation.
+                    placeholder_depth_map = torch.ones_like(decoded_chunk[i, 0, 0, :, :], device=self.device)
+
+                    self.memory_update_executor.submit(
+                        self.vggt_retriever.add_view_to_memory,
+                        view_index=frame_idx_to_write,
+                        image=decoded_chunk[i, 0].clone(),
+                        pose_encoding=pose_encoding,
+                        depth_map=placeholder_depth_map,
+                        image_size_hw=image_size_hw
+                    )
+
+            curr_frame += next_horizon
+            pbar.update(next_horizon)
+            ai += next_horizon
+
+        # Final processing after the loop
+        final_generated_latents = torch.cat(newly_generated_latents_all, 0)
+        xs_pred_decoded = self.decode(final_generated_latents.to(self.device)).cpu()
+
+        # Update the memory banks for the next interactive step
+        memory_latent_frames = xs_pred.cpu()
+        if self.condition_index_method.lower() == "dinov3":
+            if memory_raw_frames is None:
+                # This case handles if the interactive session started with DINOv3 but no raw frames
+                # We decode all generated frames to create the raw frame memory
+                initial_raw = self.decode(memory_latent_frames[:n_context_frames].to(self.device)).cpu()
+                memory_raw_frames = torch.cat([initial_raw, xs_pred_decoded], 0)
+            else:
+                memory_raw_frames = torch.cat([memory_raw_frames, xs_pred_decoded], 0)
+        else:
+            memory_raw_frames = None
+
+        return (xs_pred_decoded.cpu().numpy(), 
+                memory_latent_frames.cpu().numpy(), 
+                memory_actions.cpu().numpy(), 
+                memory_poses.cpu().numpy(), 
+                memory_c2w.cpu().numpy(), 
+                memory_frame_idx.cpu().numpy(),
+                memory_raw_frames.cpu().numpy() if memory_raw_frames is not None else None)
