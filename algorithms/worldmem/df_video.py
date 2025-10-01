@@ -1152,7 +1152,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_poses = first_pose[None, None].to(device)
             new_c2w_mat = euler_to_camera_to_world_matrix(first_pose)
             memory_c2w = new_c2w_mat[None, None].to(device)
-            memory_frame_idx = torch.tensor([]).to(device)
+            # Initialize as 2D tensor (T, B) with starting index 0 for consistency
+            memory_frame_idx = torch.zeros((1, 1), dtype=torch.long, device=device)
         
             # --- ASYNCHRONOUS VGGT WRITE TO MEMORY (First Frame) ---
             if self.condition_index_method.lower() == "vggt_surfel":
@@ -1207,6 +1208,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
             memory_actions = memory_actions.to(device)
             memory_poses = memory_poses.to(device)
             memory_c2w = memory_c2w.to(device)
+            # Ensure memory_frame_idx is 2D (T, B)
+            if memory_frame_idx.ndim == 1:
+                memory_frame_idx = memory_frame_idx.view(-1, 1)
             memory_frame_idx = memory_frame_idx.to(device)
             new_actions = new_actions.to(device)
 
