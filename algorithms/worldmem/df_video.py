@@ -389,7 +389,10 @@ class WorldMemMinecraft(DiffusionForcingBase):
         # Initialize VMem-based surfel memory system
         elif self.condition_index_method.lower() == "vggt_surfel":
             print("Initializing VMem surfel-based memory system.")
-            self.vmem_adapter = VMemAdapter(device=self.device)
+            # Force CUDA device (self.device might still be 'cpu' during __init__)
+            vggt_device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.vmem_adapter = VMemAdapter(device=vggt_device)
+            print(f"VMem adapter initialized on device: {vggt_device}")
             # VMem handles memory updates internally, no need for separate executor
 
     def _wait_for_memory_updates(self):
