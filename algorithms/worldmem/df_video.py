@@ -1212,6 +1212,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         context_indices_np = context_indices_np[:memory_condition_length]
                         # ---  ---
                         random_idx = torch.tensor(context_indices_np, dtype=torch.long).unsqueeze(1)
+                        print(f"Final random_idx: {random_idx}")
                         print(f"Final random_idx shape: {random_idx.shape}")
 
                     else:
