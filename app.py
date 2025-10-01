@@ -695,6 +695,7 @@ if TEST_MODE:
     # Ensure initialization is complete (synchronous above)
     test_image = ICE_PLAINS_IMAGE
     test_actions = "AAAAADDDDD"
+    # test_actions = "AADD"
 
     # Initialize states using the same reset flow as UI
     input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = reset(test_image)
