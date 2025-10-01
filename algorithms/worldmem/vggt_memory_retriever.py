@@ -200,3 +200,8 @@ class VGGTSurfelMemory:
 
         print(f"Retrieved {len(retrieved_views)} views for conditioning: {retrieved_indices}")
         return retrieved_views
+
+# Backward-compatibility alias expected by other modules
+# Note: If downstream code expects different method signatures,
+# we may need to adapt wrappers; for now, expose the same class name.
+VGGTMemoryRetriever = VGGTSurfelMemory
