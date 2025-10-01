@@ -938,7 +938,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         # --- INITIALIZE VMEM WITH CONTEXT FRAMES ---
         if self.condition_index_method.lower() == "vggt_surfel":
-            print("Initializing VMem with context frames...")
+            print("Initialising VMem with context frames...")
             # Initialize with the first frame
             first_frame = convert_worldmem_image_to_vmem(xs_raw[0, 0])
             first_pose = convert_worldmem_pose_to_vmem(c2w_mat[0, 0])
