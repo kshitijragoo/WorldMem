@@ -1135,9 +1135,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
         memory_condition_length = self.memory_condition_length
 
         if memory_latent_frames is None:
-            first_frame = torch.from_numpy(first_frame)
-            new_actions = torch.from_numpy(new_actions)
-            first_pose = torch.from_numpy(first_pose)
+            # Accept numpy or tensor inputs
+            if not isinstance(first_frame, torch.Tensor):
+                first_frame = torch.from_numpy(first_frame)
+            if new_actions is not None and not isinstance(new_actions, torch.Tensor):
+                new_actions = torch.from_numpy(new_actions)
+            if first_pose is not None and not isinstance(first_pose, torch.Tensor):
+                first_pose = torch.from_numpy(first_pose)
             
             # Encode the first frame to get its latent
             first_frame_encode = self.encode(first_frame[None, None].to(device))
@@ -1190,16 +1194,21 @@ class WorldMemMinecraft(DiffusionForcingBase):
         else:
             # Load existing memory from numpy arrays
             memory_latent_frames = torch.from_numpy(memory_latent_frames)
-            if self.condition_index_method.lower() == "dinov3":
+            if self.condition_index_method.lower() == "dinov3" and memory_raw_frames is not None:
                 memory_raw_frames = torch.from_numpy(memory_raw_frames)
             else:
                 memory_raw_frames = None
                 
-            memory_actions = torch.from_numpy(memory_actions).to(device)
-            memory_poses = torch.from_numpy(memory_poses).to(device)
-            memory_c2w = torch.from_numpy(memory_c2w).to(device)
-            memory_frame_idx = torch.from_numpy(memory_frame_idx).to(device)
-            new_actions = torch.from_numpy(new_actions).to(device)
+            memory_actions = memory_actions if isinstance(memory_actions, torch.Tensor) else torch.from_numpy(memory_actions)
+            memory_poses = memory_poses if isinstance(memory_poses, torch.Tensor) else torch.from_numpy(memory_poses)
+            memory_c2w = memory_c2w if isinstance(memory_c2w, torch.Tensor) else torch.from_numpy(memory_c2w)
+            memory_frame_idx = memory_frame_idx if isinstance(memory_frame_idx, torch.Tensor) else torch.from_numpy(memory_frame_idx)
+            new_actions = new_actions if isinstance(new_actions, torch.Tensor) else torch.from_numpy(new_actions)
+            memory_actions = memory_actions.to(device)
+            memory_poses = memory_poses.to(device)
+            memory_c2w = memory_c2w.to(device)
+            memory_frame_idx = memory_frame_idx.to(device)
+            new_actions = new_actions.to(device)
 
         curr_frame = 0
         batch_size = 1
