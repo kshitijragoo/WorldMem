@@ -34,7 +34,7 @@ class VGGTMemoryRetriever:
         positions = np.array([s.position for s in self.surfels])
         self.surfel_kdtree = cKDTree(positions)
 
-    def add_view(self, view_index, image, pose_encoding, depth_map, image_size_hw):
+    def add_view_to_memory(self, view_index, image, pose_encoding, depth_map, image_size_hw):
         """
         The "Writing" module. Processes a new view, generates surfels,
         and updates the memory bank.
