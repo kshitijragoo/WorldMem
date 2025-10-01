@@ -15,9 +15,9 @@ import torch.nn.functional as F
 # Robust imports for VGGT package structure
 
 try:
-    from vggt.utils.rotation import quat_to_mat, mat_to_quat
-    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-    from vggt.utils.geometry import (
+    from vggt.vggt.utils.rotation import quat_to_mat, mat_to_quat
+    from vggt.vggt.utils.pose_enc import pose_encoding_to_extri_intri
+    from vggt.vggt.utils.geometry import (
         unproject_depth_map_to_point_map,
         project_world_points_to_cam,
         depth_to_world_coords_points,
@@ -36,15 +36,6 @@ except ModuleNotFoundError:
         depth_to_world_coords_points,
     )
 
-
-
-from vggt.utils.rotation import quat_to_mat, mat_to_quat
-from vggt.utils.pose_enc import pose_encoding_to_extri_intri
-from vggt.utils.geometry import (
-    unproject_depth_map_to_point_map,
-    project_world_points_to_cam,
-    depth_to_world_coords_points,
-)
 
 def get_camera_matrices_from_pose_encoding(pose_encoding, image_size_hw):
     """
