@@ -2,10 +2,42 @@
 
 import torch
 import numpy as np
+import os
+import sys
+import torch.nn.functional as F
+
 
 
 # Import core geometric functions directly from the vggt library
 # This ensures that all transformations are consistent with the VGGT model's native conventions.
+
+
+# Robust imports for VGGT package structure
+
+try:
+    from vggt.utils.rotation import quat_to_mat, mat_to_quat
+    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+    from vggt.utils.geometry import (
+        unproject_depth_map_to_point_map,
+        project_world_points_to_cam,
+        depth_to_world_coords_points,
+    )
+except ModuleNotFoundError:
+    # Add inner vggt/ directory to path and retry
+    this_dir = os.path.dirname(__file__)
+    inner_vggt_path = os.path.abspath(os.path.join(this_dir, "../../../vggt"))
+    if inner_vggt_path not in sys.path:
+        sys.path.insert(0, inner_vggt_path)
+    from vggt.utils.rotation import quat_to_mat, mat_to_quat
+    from vggt.utils.pose_enc import pose_encoding_to_extri_intri
+    from vggt.utils.geometry import (
+        unproject_depth_map_to_point_map,
+        project_world_points_to_cam,
+        depth_to_world_coords_points,
+    )
+
+
+
 from vggt.utils.rotation import quat_to_mat, mat_to_quat
 from vggt.utils.pose_enc import pose_encoding_to_extri_intri
 from vggt.utils.geometry import (
