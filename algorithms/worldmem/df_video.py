@@ -788,6 +788,121 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         return random_idx
 
+
+    def _generate_condition_indices_mc_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon):
+        """
+        Generate memory indices using a hybrid geometric and semantic retrieval strategy.
+        This version uses FOV overlap for geometric filtering.
+        """
+        batch_size = xs_pred.shape[1]
+
+        # --- Graceful Fallback for Initial Frames ---
+        # If the memory bank is too small for a full search, fall back to a simpler method.
+        if curr_frame < self.memory_candidate_pool_size:
+            # Using k-NN is a fast and reasonable fallback for the warm-up phase.
+            return self._generate_condition_indices_knn(
+                curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+            )
+
+        final_indices_list = []
+        # Process each item in the batch independently
+        for b in range(batch_size):
+            # --- 1. Geometric Filtering (FOV Overlap) ---
+            current_pose = pose_conditions[curr_frame, b]
+            memory_poses = pose_conditions[:curr_frame, b]
+
+            # Define FOV and sampling parameters
+            num_samples = 4096  # Number of points to sample for overlap estimation
+            radius = 30         # Radius of the sphere to sample points from
+            fov_half_h = 105 / 2
+            fov_half_v = 75 / 2
+
+            # Generate a point cloud centered around the current camera
+            points = generate_points_in_sphere(num_samples, radius).to(pose_conditions.device)
+            points += current_pose[:3] # Move sphere to current location
+
+            # Find which of these points are inside the current camera's FOV
+            # unsqueeze(1) is for the batch dimension expected by is_inside_fov_3d_hv
+            points_in_current_fov_mask = is_inside_fov_3d_hv(
+                points.unsqueeze(1), current_pose[:3], current_pose[3], current_pose[4], fov_half_h, fov_half_v
+            )
+
+            # Check which points fall within the FOV of all past memory frames
+            points_in_memory_fov_mask = is_inside_fov_3d_hv(
+                points.unsqueeze(1), memory_poses[:, :3], memory_poses[:, 3], memory_poses[:, 4], fov_half_h, fov_half_v
+            )
+
+            # Calculate the overlap: count points that are in BOTH the current and a past FOV
+            overlap_mask = points_in_current_fov_mask.bool() & points_in_memory_fov_mask
+            overlap_counts = overlap_mask.sum(dim=0)
+
+            # Normalize to get an overlap ratio (the geometric score)
+            total_points_in_current_fov = points_in_current_fov_mask.sum()
+            overlap_ratios = overlap_counts / (total_points_in_current_fov + 1e-6) # Add epsilon for stability
+
+            # Get the top N candidates with the highest FOV overlap
+            # We take the raw scores for softmax later, and the indices for lookup
+            top_overlap_scores, candidate_indices = torch.topk(
+                overlap_ratios,
+                k=min(self.memory_candidate_pool_size, curr_frame), # Ensure k is not larger than available frames
+                largest=True
+            )
+            geometric_scores = F.softmax(top_overlap_scores, dim=0)
+
+            # --- 2. Semantic Re-ranking (DINOv3) ---
+            current_frame_img = xs_raw[curr_frame, b].unsqueeze(0)
+            candidate_frames_img = xs_raw[candidate_indices, b]
+
+            # Create a single batch for efficient feature extraction
+            feature_extraction_batch = torch.cat([current_frame_img, candidate_frames_img], dim=0)
+
+            with torch.no_grad():
+                all_features = self.dino_feature_extractor.extract_patch_features(feature_extraction_batch).mean(dim=1)
+
+            current_features = all_features[0].unsqueeze(0)
+            candidate_features = all_features[1:]
+
+            # Calculate semantic scores (cosine similarity)
+            semantic_scores = F.cosine_similarity(current_features, candidate_features, dim=-1)
+            semantic_scores = F.softmax(semantic_scores, dim=0)
+
+            # --- 3. Hybrid Scoring ---
+            combined_scores = (self.w_geom * geometric_scores) + (self.w_sem * semantic_scores)
+
+            # Re-rank the candidates based on the hybrid score
+            ranked_candidate_indices = candidate_indices[torch.argsort(combined_scores, descending=True)]
+
+            # --- 4. Final Selection with Redundancy Filtering ---
+            final_selected_indices_for_batch = []
+            available_indices = list(ranked_candidate_indices.cpu().numpy())
+
+            while len(final_selected_indices_for_batch) < memory_condition_length and available_indices:
+                # Select the best available candidate
+                best_idx = available_indices.pop(0)
+                final_selected_indices_for_batch.append(best_idx)
+
+                # Filter out remaining candidates that are too similar to the one just selected
+                if available_indices: # Only filter if there are candidates left
+                    selected_features = xs_pred[best_idx, b].flatten()
+
+                    remaining_indices_to_keep = []
+                    for idx_to_check in available_indices:
+                        features_to_check = xs_pred[idx_to_check, b].flatten()
+                        # Using VAE latent similarity for filtering is fast
+                        similarity = F.cosine_similarity(selected_features.unsqueeze(0), features_to_check.unsqueeze(0))
+
+                        if similarity < self.similarity_threshold:
+                            remaining_indices_to_keep.append(idx_to_check)
+                    available_indices = remaining_indices_to_keep
+
+            # Pad if not enough unique frames were found
+            while len(final_selected_indices_for_batch) < memory_condition_length:
+                final_selected_indices_for_batch.append(final_selected_indices_for_batch[0]) # Pad with the best one
+
+            final_indices_list.append(torch.tensor(final_selected_indices_for_batch, device='cpu'))
+
+        return torch.stack(final_indices_list, dim=1)
+
     def _generate_condition_indices_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon):
         """
         Generate memory indices using a hybrid geometric and semantic retrieval strategy.
