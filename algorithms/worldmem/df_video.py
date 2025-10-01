@@ -2,6 +2,7 @@
 
 
 import os
+import sys
 import random
 import math
 import numpy as np
@@ -27,7 +28,17 @@ from.dinov3_feature_extractor import DINOv3FeatureExtractor
 # Corrected import for the new class name
 from.vggt_memory_retriever import VGGTMemoryRetriever
 # Import required for pose conversion
-from vggt.vggt.utils.rotation import mat_to_quat
+
+try:
+    from vggt.vggt.utils.rotation import mat_to_quat
+except ModuleNotFoundError:
+    # Add inner vggt/ directory to path and retry
+    this_dir = os.path.dirname(__file__)
+    inner_vggt_path = os.path.abspath(os.path.join(this_dir, "../../../vggt"))
+    if inner_vggt_path not in sys.path:
+        sys.path.insert(0, inner_vggt_path)
+
+    from vggt.utils.rotation import mat_to_quat
 
 import glob
 
