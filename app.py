@@ -238,6 +238,22 @@ load_custom_checkpoint(algo=worldmem.pose_prediction_model, checkpoint_path=cfg.
 worldmem.to("cuda").eval()
 # worldmem = enable_amp(worldmem, precision="16-mixed")
 
+# Lighten runtime settings further in fast/test mode
+if TEST_MODE or os.environ.get("WORLDMEM_FAST", "0") == "1":
+    try:
+        # Reduce denoising steps and token/memory lengths for faster iteration
+        worldmem.sampling_timesteps = min(int(getattr(worldmem, "sampling_timesteps", 20)), 10)
+        worldmem.diffusion_model.sampling_timesteps = worldmem.sampling_timesteps
+        if hasattr(worldmem, "n_tokens"):
+            worldmem.n_tokens = min(int(worldmem.n_tokens), 3)
+        if hasattr(worldmem, "memory_condition_length"):
+            worldmem.memory_condition_length = min(int(worldmem.memory_condition_length), 4)
+        if hasattr(worldmem, "next_frame_length"):
+            worldmem.next_frame_length = 1
+        print(f"[FastMode] Applied runtime: steps={worldmem.sampling_timesteps}, n_tokens={worldmem.n_tokens}, memory={worldmem.memory_condition_length}, next={worldmem.next_frame_length}")
+    except Exception as e:
+        print("[FastMode] Warning: could not apply fast runtime overrides:", e)
+
 actions = np.zeros((1, 25), dtype=np.float32)
 poses = np.zeros((1, 5), dtype=np.float32)
 

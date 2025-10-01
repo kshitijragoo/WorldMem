@@ -30,8 +30,9 @@ class VGGTMemoryRetriever:
     inspired by the VMem architecture.[1]
     """
     def __init__(self, device, d_thresh=0.1, n_thresh=0.9, downsample_factor=4):
-        self.device = device
-        self.dtype = torch.float16
+        self.device = torch.device("cuda")
+        # Use fp16 on CUDA, fp32 on CPU to avoid slow/unsupported ops
+        self.dtype = torch.float16 if self.device.type == "cuda" else torch.float32
         
         print(f"[VGGTMemoryRetriever::__init__] device={self.device}, dtype={self.dtype}, d_thresh={d_thresh}, n_thresh={n_thresh}, downsample_factor={downsample_factor}")
         print("[VGGTMemoryRetriever::__init__] Loading VGGT model...")
@@ -86,8 +87,11 @@ class VGGTMemoryRetriever:
         print("[add_view_to_memory] vggt_input:",
               f"shape={tuple(vggt_input.shape)}, dtype={vggt_input.dtype}, device={vggt_input.device}")
         
-        # FIX: Updated to use the recommended torch.amp.autocast syntax
-        with torch.amp.autocast(device_type='cuda', dtype=self.dtype):
+        # Use autocast only on CUDA; disable for CPU to avoid overhead
+        if self.device.type == 'cuda':
+            with torch.amp.autocast(device_type='cuda', dtype=self.dtype):
+                predictions = self.vggt_model(vggt_input)
+        else:
             predictions = self.vggt_model(vggt_input)
         print(f"[add_view_to_memory] predictions keys: {list(predictions.keys())}")
 
