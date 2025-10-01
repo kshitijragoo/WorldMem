@@ -11,19 +11,20 @@ from. import geometry_utils as geo
 # Define a simple structure for a surfel
 Surfel = namedtuple('Surfel', ['position', 'normal', 'radius', 'view_indices'])
 
-class VGGTSurfelMemory:
+class VGGTMemoryRetriever:
     """
     Implements the Surfel-Indexed View Memory (VMem) strategy.
     This class manages the "Writing" of new views into a surfel-based geometric index
     and the "Reading" of relevant past views to condition future frame generation.
     """
-    def __init__(self, downsample_factor=4, merge_dist_threshold=0.1, merge_norm_threshold=0.9):
+    def __init__(self, downsample_factor=4, merge_dist_threshold=0.1, merge_norm_threshold=0.9, device=None):
         self.surfels = []
         self.view_memory = {} # Stores {view_index: (image, pose_encoding)}
         self.downsample_factor = downsample_factor
         self.merge_dist_threshold = merge_dist_threshold
         self.merge_norm_threshold = merge_norm_threshold
         self.surfel_kdtree = None
+        self.device = torch.device("cuda")
 
     def _update_kdtree(self):
         """Rebuilds the k-d tree for fast nearest-neighbor search of surfels."""
@@ -201,7 +202,3 @@ class VGGTSurfelMemory:
         print(f"Retrieved {len(retrieved_views)} views for conditioning: {retrieved_indices}")
         return retrieved_views
 
-# Backward-compatibility alias expected by other modules
-# Note: If downstream code expects different method signatures,
-# we may need to adapt wrappers; for now, expose the same class name.
-VGGTMemoryRetriever = VGGTSurfelMemory
