@@ -52,8 +52,9 @@ class VMemAdapter:
         
         self.config = OmegaConf.load(config_path)
         
-        # Initialize VMem pipeline
-        self.pipeline = VMemPipeline(self.config, device=device)
+        # Initialize VMem pipeline in surfel-only mode (WorldMem uses its own diffusion/VAE/encoder)
+        # We only need VGGT for 3D reconstruction and surfel-based retrieval
+        self.pipeline = VMemPipeline(self.config, device=device, surfel_only_mode=True)
         
         # Track current state
         self.is_initialized = False
