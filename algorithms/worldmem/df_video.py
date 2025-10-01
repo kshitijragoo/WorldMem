@@ -954,11 +954,16 @@ class WorldMemMinecraft(DiffusionForcingBase):
             first_pose = convert_worldmem_pose_to_vmem(c2w_mat[0, 0])
             self.vmem_adapter.initialize_with_frame(first_frame, first_pose)
             
-            # Add remaining context frames if any
+            # Add remaining context frames if any by decoding them and adding them to memory
             if n_context_frames > 1:
-                context_poses = [convert_worldmem_pose_to_vmem(c2w_mat[i, 0]) for i in range(1, n_context_frames)]
-                context_Ks = [self.vmem_adapter.pipeline.Ks[0]] * (n_context_frames - 1)  # Use same intrinsics
-                self.vmem_adapter.generate_trajectory_frames(context_poses, context_Ks)
+                for i in range(1, n_context_frames):
+                    # In validation, context frames are ground truth from xs_raw
+                    vmem_formatted_image = convert_worldmem_image_to_vmem(xs_raw[i, 0])
+                    pose_to_add = convert_worldmem_pose_to_vmem(c2w_mat[i, 0])
+                    # Assume intrinsics (K) are constant
+                    K_to_add = self.vmem_adapter.pipeline.Ks[0]
+                    self.vmem_adapter.add_frame(vmem_formatted_image.unsqueeze(0), pose_to_add, K_to_add)
+
 
         curr_frame = n_context_frames
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
@@ -988,14 +993,24 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(horizon)]
                     context_info = self.vmem_adapter.get_context_info(target_poses)
                     
-                    # Extract context indices from VMem
+                    # Extract context indices from VMem and pad if necessary
                     if 'context_time_indices' in context_info:
                         context_indices = context_info['context_time_indices'].cpu().numpy()
-                        random_idx = torch.tensor(context_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                        # Pad if not enough context is returned
+                        num_retrieved = len(context_indices)
+                        if num_retrieved < memory_condition_length:
+                            padding_val = context_indices[-1] if num_retrieved > 0 else 0
+                            padding = np.full(memory_condition_length - num_retrieved, padding_val)
+                            context_indices = np.concatenate([context_indices, padding])
+                        
+                        random_idx = torch.tensor(context_indices[:memory_condition_length], device='cpu').unsqueeze(1).repeat(1, batch_size)
                     else:
                         # Fallback to recent frames if no context available
                         recent_indices = list(range(max(0, curr_frame - memory_condition_length), curr_frame))
-                        random_idx = torch.tensor(recent_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                        while len(recent_indices) < memory_condition_length:
+                            recent_indices.insert(0, recent_indices[0] if recent_indices else 0)
+                        random_idx = torch.tensor(recent_indices[-memory_condition_length:], device='cpu').unsqueeze(1).repeat(1, batch_size)
+
                 elif self.condition_index_method.lower() == "knn":
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
@@ -1042,14 +1057,22 @@ class WorldMemMinecraft(DiffusionForcingBase):
             # Append the new latents to the persistent prediction tensor
             xs_pred = torch.cat([xs_pred, newly_generated_latents], 0)
 
-            # --- WRITE TO VMEM MEMORY (Incremental) ---
+            # --- [START] CORRECTED MEMORY UPDATE LOGIC ---
             if self.condition_index_method.lower() == "vggt_surfel":
-                # Generate trajectory frames using VMem for the newly generated poses
-                new_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(horizon)]
-                new_Ks = [self.vmem_adapter.pipeline.Ks[0]] * horizon  # Use same intrinsics
-                
-                # VMem will handle the memory updates internally during generation
-                self.vmem_adapter.generate_trajectory_frames(new_poses, new_Ks)
+                # Decode each newly generated latent and add it to the memory bank one by one
+                for i in range(horizon):
+                    # Decode the single latent frame (processing first item in batch for VMem)
+                    decoded_frame = self.decode(newly_generated_latents[i:i+1, 0:1].to(self.device)).cpu()
+                    
+                    # Prepare data for the adapter
+                    vmem_formatted_image = convert_worldmem_image_to_vmem(decoded_frame.squeeze(0))
+                    pose_to_add = convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0])
+                    # Assume intrinsics (K) are constant
+                    K_to_add = self.vmem_adapter.pipeline.Ks[0]
+
+                    # Add the new frame content to the surfel memory
+                    self.vmem_adapter.add_frame(vmem_formatted_image.unsqueeze(0), pose_to_add, K_to_add)
+            # --- [END] CORRECTED MEMORY UPDATE LOGIC ---
 
             curr_frame += horizon
             pbar.update(horizon)
@@ -1284,16 +1307,6 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
             newly_generated_latents = xs_pred[curr_frame : curr_frame + next_horizon]
             newly_generated_latents_all.append(newly_generated_latents)
-
-            # --- WRITE TO VMEM MEMORY (Incremental) ---
-            # if self.condition_index_method.lower() == "vggt_surfel":
-            #     print("Writing to VMem memory")
-            #     # Generate trajectory frames using VMem
-            #     new_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(next_horizon)]
-            #     new_Ks = [self.vmem_adapter.pipeline.Ks[0]] * next_horizon
-            #     print(f"New poses: {new_poses}")
-            #     print(f"New Ks: {new_Ks}")
-            #     self.vmem_adapter.generate_trajectory_frames(new_poses, new_Ks)
 
             if self.condition_index_method.lower() == "vggt_surfel":
                 print("Writing newly generated WorldMem frames to VMem memory...")
