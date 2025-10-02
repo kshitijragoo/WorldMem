@@ -1071,7 +1071,17 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         # Encode all ground truth frames at once
         print(f"[DEBUG] Encoding frames...")
-        xs = self.encode(xs_raw).cpu()
+                # Encode frames in chunks if necessary
+        total_frame = xs_raw.shape[0]
+        if total_frame > 10:
+            xs = torch.cat([
+                self.encode(xs_raw[int(total_frame * i / 10):int(total_frame * (i + 1) / 10)]).cpu()
+                for i in range(10)
+            ])
+        else:
+            xs = self.encode(xs_raw).cpu()
+
+
         n_frames, batch_size, *_ = xs.shape
         print(f"[DEBUG] Frames encoded. xs shape: {xs.shape}, n_frames: {n_frames}, batch_size: {batch_size}")
         
