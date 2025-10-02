@@ -66,7 +66,7 @@ pose_predictor_path: yslan/worldmem_checkpoints/pose_prediction_model_only.ckpt
 dinov3_model_id: facebook/dinov3-vits16-pretrain-lvd1689m
 
 # Condition index method
-condition_index_method: vggt_surfel
+condition_index_method: dinov3
 
 
 next_frame_length: 1
