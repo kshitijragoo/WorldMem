@@ -27,6 +27,8 @@ from huggingface_hub import model_info
 
 
 TEST_MODE = any(arg in ["-test", "--test", "test"] for arg in sys.argv[1:])
+# New TEST2 headless flag for automated run with selectable condition index method
+TEST2_MODE = any(arg in ["-test2", "--test2", "test2"] for arg in sys.argv[1:])
 
 def is_huggingface_model(path: str) -> bool:
     hf_ckpt = str(path).split('/')
@@ -714,5 +716,54 @@ if TEST_MODE:
     )
 
     print(f"[Test] Generation complete. Video saved at: {temporal_video_path}")
+elif TEST2_MODE:
+    print("[Test2] Starting headless initialization and generation...")
+    # Determine condition index method from CLI args following the test2 flag
+    # Accept values: fov, dinov3, vggt_surfel; also accept mc_* variants like mc_dinov3
+    method = None
+    for i, arg in enumerate(sys.argv[1:], start=1):
+        if arg in ["-test2", "--test2", "test2"]:
+            if i + 1 < len(sys.argv):
+                method = sys.argv[i + 1]
+            break
+    if method is None:
+        method = "fov"
+    method = method.lower()
+    if method.startswith("mc_"):
+        method = method[3:]
+    if method not in ["fov", "dinov3", "vggt_surfel"]:
+        print(f"[Test2] Unrecognized method '{method}', defaulting to 'fov'.")
+        method = "fov"
+
+    # Reinitialize worldmem with the requested method
+    try:
+        worldmem = reinitialize_worldmem_with_method(method)
+        print(f"[Test2] Using condition index method: {method}")
+    except Exception as e:
+        print(f"[Test2] Failed to reinitialize with method '{method}': {e}")
+        raise
+
+    # Use the Savanna scene as requested
+    test_image = SAVANNA_IMAGE
+    # Provided action sequence
+    test_actions = "AAAAAAAAAQQQQQQQQQQQQQDDDDDDDDDDDDDDDQQQQQQQQQQQQAAAAAAAAAAAAAAAQQQQQQQQQQQQQDDDDDDDDDDDDDDDQQQQQQQQQQQQ"
+
+    # Initialize states using the same reset flow as UI
+    input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = reset(test_image)
+
+    # Run one generation with the specified actions
+    last_frame, temporal_video_path, input_history, video_frames, memory_latent_frames, memory_actions, memory_poses, memory_c2w, memory_frame_idx, memory_raw_frames = generate(
+        test_actions,
+        input_history,
+        video_frames,
+        memory_latent_frames,
+        memory_actions,
+        memory_poses,
+        memory_c2w,
+        memory_frame_idx,
+        memory_raw_frames,
+    )
+
+    print(f"[Test2] Generation complete. Video saved at: {temporal_video_path}")
 else:
     demo.launch(share=True)
