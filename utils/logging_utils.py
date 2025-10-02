@@ -137,11 +137,20 @@ def get_validation_metrics_for_videos(
         lpips_model.reset()
 
     if fid_model is not None:
+        print(f"[DEBUG] FID model device: {next(fid_model.parameters()).device}")
+        print(f"[DEBUG] Input tensors device: {observation_hat.device}")
+        
+        # Ensure FID model is on the same device as input tensors
+        fid_model = fid_model.to(observation_hat.device)
+        
         observation_hat_uint8 = ((observation_hat + 1.0) / 2 * 255).type(torch.uint8)
         observation_gt_uint8 = ((observation_gt + 1.0) / 2 * 255).type(torch.uint8)
+        
+        print(f"[DEBUG] Starting FID computation...")
         fid_model.update(observation_gt_uint8, real=True)
         fid_model.update(observation_hat_uint8, real=False)
         fid = fid_model.compute()
+        print(f"[DEBUG] FID computation completed: {fid}")
         output_dict["fid"] = fid
         # Reset the states of non-functional metrics
         fid_model.reset()
