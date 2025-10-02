@@ -840,6 +840,13 @@ class WorldMemMinecraft(DiffusionForcingBase):
         print("Using MC for DINOv3")
         batch_size = xs_pred.shape[1]
 
+        # --- Safety checks on xs_raw availability/length ---
+        # If raw frames are not yet populated to the current frame, gracefully fallback
+        if xs_raw is None or xs_raw.shape[0] <= curr_frame:
+            return self._generate_condition_indices_knn(
+                curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+            )
+
         # --- Graceful Fallback for Initial Frames ---
         # If the memory bank is too small for a full search, fall back to a simpler method.
         if curr_frame < self.memory_candidate_pool_size:
@@ -894,6 +901,20 @@ class WorldMemMinecraft(DiffusionForcingBase):
             geometric_scores = F.softmax(top_overlap_scores, dim=0)
 
             # --- 2. Semantic Re-ranking (DINOv3) ---
+            # Ensure we have enough raw frames to index; otherwise fallback for this batch item
+            if xs_raw.shape[0] <= curr_frame:
+                return self._generate_condition_indices_knn(
+                    curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                )
+
+            # Filter candidate indices to those available in xs_raw; if none remain, fallback
+            valid_mask = candidate_indices < xs_raw.shape[0]
+            if not torch.any(valid_mask):
+                return self._generate_condition_indices_knn(
+                    curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
+                )
+            candidate_indices = candidate_indices[valid_mask]
+
             current_frame_img = xs_raw[curr_frame, b].unsqueeze(0)
             candidate_frames_img = xs_raw[candidate_indices, b]
 
