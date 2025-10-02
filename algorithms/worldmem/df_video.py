@@ -909,6 +909,8 @@ class WorldMemMinecraft(DiffusionForcingBase):
             semantic_scores = F.softmax(semantic_scores, dim=0)
 
             # --- 3. Hybrid Scoring ---
+            # Ensure both score tensors are on the same device before combining
+            geometric_scores = geometric_scores.to(semantic_scores.device)
             combined_scores = (self.w_geom * geometric_scores) + (self.w_sem * semantic_scores)
 
             # Re-rank the candidates based on the hybrid score
