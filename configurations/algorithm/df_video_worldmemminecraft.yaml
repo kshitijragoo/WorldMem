@@ -14,6 +14,9 @@ use_plucker: true
 
 
 condition_index_method: fov  # Default method, can be overridden
+# Hugging Face identifier for the DINOv3 model
+dinov3_model_id: facebook/dinov3-vits16-pretrain-lvd1689m
+
 
 
 diffusion:
