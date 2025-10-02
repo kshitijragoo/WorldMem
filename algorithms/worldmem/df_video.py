@@ -427,7 +427,27 @@ class WorldMemMinecraft(DiffusionForcingBase):
             ref_mode=self.ref_mode
         )
 
-        self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity()
+        # Initialize metrics based on configuration
+        self.validation_lpips_model = None
+        self.validation_fid_model = None
+        self.validation_fvd_model = None
+        
+        # Get metrics from config, default to lpips if not specified
+        metrics = getattr(self.cfg, 'metrics', ['lpips'])
+        if isinstance(metrics, str):
+            metrics = [metrics]
+        
+        print(f"[DEBUG] Metrics configuration: {metrics}")
+        
+        if 'lpips' in metrics:
+            self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity()
+        if 'fid' in metrics:
+            from algorithms.common.metrics import FrechetInceptionDistance
+            self.validation_fid_model = FrechetInceptionDistance()
+        if 'fvd' in metrics:
+            from algorithms.common.metrics import FrechetVideoDistance
+            self.validation_fvd_model = FrechetVideoDistance()
+        
         vae = VAE_models["vit-l-20-shallow-encoder"]()
         self.vae = vae.eval()
 
