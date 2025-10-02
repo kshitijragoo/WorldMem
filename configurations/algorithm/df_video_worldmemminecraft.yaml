@@ -12,7 +12,21 @@ optimizer_beta: [0.9, 0.99]
 action_cond_dim: 25
 use_plucker: true
 
-# condition_index_method: fov  # options: fov, knn
+condition_index_method: fov  # options: fov, knn, dinov3, vggt_surfel
+
+# Additional parameters for WorldMemMinecraft
+pose_cond_dim: 5
+state_embed_only_on_qk: true
+use_memory_attention: true
+ref_mode: sequential
+log_curve: false
+focal_length: 0.35
+self_consistency_eval: false
+next_frame_length: 1
+require_pose_prediction: false
+
+# DINOv3 specific parameters
+dinov3_model_id: dinov3_vitl16
 
 diffusion:
   # training
