@@ -427,12 +427,50 @@ class WorldMemMinecraft(DiffusionForcingBase):
             ref_mode=self.ref_mode
         )
 
-        self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity()
+        # Initialize metrics based on configuration
+        self.validation_lpips_model = None
+        self.validation_fid_model = None
+        self.validation_fvd_model = None
+        
+        # Get metrics from config, default to lpips if not specified
+        metrics = getattr(self.cfg, 'metrics', ['lpips'])
+        if isinstance(metrics, str):
+            metrics = [metrics]
+        
+        if 'lpips' in metrics:
+            self.validation_lpips_model = LearnedPerceptualImagePatchSimilarity()
+        if 'fid' in metrics:
+            from algorithms.common.metrics import FrechetInceptionDistance
+            self.validation_fid_model = FrechetInceptionDistance()
+        if 'fvd' in metrics:
+            from algorithms.common.metrics import FrechetVideoDistance
+            self.validation_fvd_model = FrechetVideoDistance()
+        
         vae = VAE_models["vit-l-20-shallow-encoder"]()
         self.vae = vae.eval()
 
         if self.require_pose_prediction:
             self.pose_prediction_model = PosePredictionNet()
+    
+    def on_validation_start(self):
+        """Move metric models to the correct device when validation starts."""
+        super().on_validation_start()
+        if hasattr(self, 'validation_lpips_model') and self.validation_lpips_model is not None:
+            self.validation_lpips_model = self.validation_lpips_model.to(self.device)
+        if hasattr(self, 'validation_fid_model') and self.validation_fid_model is not None:
+            self.validation_fid_model = self.validation_fid_model.to(self.device)
+        if hasattr(self, 'validation_fvd_model') and self.validation_fvd_model is not None:
+            self.validation_fvd_model = self.validation_fvd_model.to(self.device)
+    
+    def on_test_start(self):
+        """Move metric models to the correct device when test starts."""
+        super().on_test_start()
+        if hasattr(self, 'validation_lpips_model') and self.validation_lpips_model is not None:
+            self.validation_lpips_model = self.validation_lpips_model.to(self.device)
+        if hasattr(self, 'validation_fid_model') and self.validation_fid_model is not None:
+            self.validation_fid_model = self.validation_fid_model.to(self.device)
+        if hasattr(self, 'validation_fvd_model') and self.validation_fvd_model is not None:
+            self.validation_fvd_model = self.validation_fvd_model.to(self.device)
 
     def _generate_noise_levels(self, xs: torch.Tensor, masks = None) -> torch.Tensor:
         """
@@ -576,15 +614,24 @@ class WorldMemMinecraft(DiffusionForcingBase):
         if xs is not None:
             metric_dict = get_validation_metrics_for_videos(
                 xs_pred.to(self.device), xs.to(self.device), 
-                lpips_model=self.validation_lpips_model)
+                lpips_model=self.validation_lpips_model,
+                fid_model=self.validation_fid_model,
+                fvd_model=self.validation_fvd_model)
 
             
-            self.log_dict(
-                {"mse": metric_dict['mse'],
-                "psnr": metric_dict['psnr'],
-                "lpips": metric_dict['lpips']},
-                sync_dist=True
-            )
+            # Build log dict with available metrics
+            log_dict = {
+                "mse": metric_dict['mse'],
+                "psnr": metric_dict['psnr']
+            }
+            if 'lpips' in metric_dict:
+                log_dict["lpips"] = metric_dict['lpips']
+            if 'fid' in metric_dict:
+                log_dict["fid"] = metric_dict['fid']
+            if 'fvd' in metric_dict:
+                log_dict["fvd"] = metric_dict['fvd']
+            
+            self.log_dict(log_dict, sync_dist=True)
 
             if self.log_curve:
                 psnr_values = metric_dict['frame_wise_psnr'].cpu().tolist()
@@ -604,13 +651,22 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 xs_pred[:1],
                 xs_pred[-1:],
                 lpips_model=self.validation_lpips_model,
+                fid_model=self.validation_fid_model,
+                fvd_model=self.validation_fvd_model,
             )            
-            self.log_dict(
-                {"lpips": metric_dict['lpips'],
+            # Build log dict with available metrics
+            log_dict = {
                 "mse": metric_dict['mse'],
-                "psnr": metric_dict['psnr']},
-                sync_dist=True
-            )
+                "psnr": metric_dict['psnr']
+            }
+            if 'lpips' in metric_dict:
+                log_dict["lpips"] = metric_dict['lpips']
+            if 'fid' in metric_dict:
+                log_dict["fid"] = metric_dict['fid']
+            if 'fvd' in metric_dict:
+                log_dict["fvd"] = metric_dict['fvd']
+            
+            self.log_dict(log_dict, sync_dist=True)
 
         self.validation_step_outputs.clear()
 
