@@ -614,36 +614,47 @@ class WorldMemMinecraft(DiffusionForcingBase):
         self.validation_step_outputs.clear()
 
     def _preprocess_batch(self, batch):
+        print(f"[DEBUG] _preprocess_batch: batch length = {len(batch)}")
         if len(batch) == 5:
             xs, conditions, pose_conditions, frame_index, sample_names = batch
             self._current_sample_names = sample_names
+            print(f"[DEBUG] _preprocess_batch: xs shape = {xs.shape}")
         else:
             xs, conditions, pose_conditions, frame_index = batch
             self._current_sample_names = None
+            print(f"[DEBUG] _preprocess_batch: xs shape = {xs.shape}")
 
         if self.action_cond_dim:
+            print(f"[DEBUG] _preprocess_batch: action_cond_dim = {self.action_cond_dim}")
             conditions = torch.cat([torch.zeros_like(conditions[:, :1]), conditions[:, 1:]], 1)
             conditions = rearrange(conditions, "b t d -> t b d").contiguous()
         else:
             raise NotImplementedError("Only support external cond.")
 
+        print(f"[DEBUG] _preprocess_batch: rearranging tensors...")
         pose_conditions = rearrange(pose_conditions, "b t d -> t b d").contiguous()
         c2w_mat = euler_to_camera_to_world_matrix(pose_conditions)
         xs = rearrange(xs, "b t c ... -> t b c ...").contiguous()
         frame_index = rearrange(frame_index, "b t -> t b").contiguous()
+        print(f"[DEBUG] _preprocess_batch: preprocessing completed")
 
         return xs, conditions, pose_conditions, c2w_mat, frame_index
     
     def encode(self, x):
         # vae encoding
+        print(f"[DEBUG] encode: input shape = {x.shape}")
         T = x.shape[0]
         H, W = x.shape[-2:]
         scaling_factor = 0.07843137255
 
         x = rearrange(x, "t b c h w -> (t b) c h w")
+        print(f"[DEBUG] encode: after rearrange shape = {x.shape}")
         with torch.no_grad():
+            print(f"[DEBUG] encode: calling VAE encode...")
             x = self.vae.encode(x * 2 - 1).mean * scaling_factor
+            print(f"[DEBUG] encode: VAE encode completed, shape = {x.shape}")
         x = rearrange(x, "(t b) (h w) c -> t b c h w", t=T, h=H // self.vae.patch_size, w=W // self.vae.patch_size)
+        print(f"[DEBUG] encode: final output shape = {x.shape}")
         return x
 
     def decode(self, x):
@@ -1050,116 +1061,157 @@ class WorldMemMinecraft(DiffusionForcingBase):
         Returns:
             None: Appends the predicted and ground truth frames to `self.validation_step_outputs`.
         """
+        print(f"[DEBUG] Starting validation step {batch_idx}")
         # Preprocess the input batch
         memory_condition_length = self.memory_condition_length
+        print(f"[DEBUG] Preprocessing batch...")
         xs_raw, conditions, pose_conditions, c2w_mat, frame_idx = self._preprocess_batch(batch)
         names = getattr(self, "_current_sample_names", None)
+        print(f"[DEBUG] Batch preprocessed. xs_raw shape: {xs_raw.shape}")
 
         # Encode all ground truth frames at once
+        print(f"[DEBUG] Encoding frames...")
         xs = self.encode(xs_raw).cpu()
         n_frames, batch_size, *_ = xs.shape
+        print(f"[DEBUG] Frames encoded. xs shape: {xs.shape}, n_frames: {n_frames}, batch_size: {batch_size}")
         
         # Initialize context frames
         n_context_frames = self.context_frames // self.frame_stack
         xs_pred = xs[:n_context_frames].clone()
+        print(f"[DEBUG] Context frames initialized. n_context_frames: {n_context_frames}")
 
         # --- INITIALIZE VMEM WITH CONTEXT FRAMES ---
         if self.condition_index_method.lower() == "vggt_surfel":
-            print("Initialising VMem with context frames...")
+            print("[DEBUG] Initialising VMem with context frames...")
             # Initialize with the first frame
+            print("[DEBUG] Converting first frame to VMem format...")
             first_frame = convert_worldmem_image_to_vmem(xs_raw[0, 0])
             first_pose = convert_worldmem_pose_to_vmem(c2w_mat[0, 0])
+            print("[DEBUG] Initializing VMem adapter with first frame...")
             self.vmem_adapter.initialize_with_frame(first_frame, first_pose)
+            print("[DEBUG] VMem adapter initialized successfully")
             
             # Add remaining context frames if any by decoding them and adding them to memory
             if n_context_frames > 1:
+                print(f"[DEBUG] Adding {n_context_frames-1} additional context frames to VMem...")
                 for i in range(1, n_context_frames):
+                    print(f"[DEBUG] Adding context frame {i} to VMem...")
                     # In validation, context frames are ground truth from xs_raw
                     vmem_formatted_image = convert_worldmem_image_to_vmem(xs_raw[i, 0])
                     pose_to_add = convert_worldmem_pose_to_vmem(c2w_mat[i, 0])
                     # Assume intrinsics (K) are constant
                     K_to_add = self.vmem_adapter.pipeline.Ks[0]
                     self.vmem_adapter.add_frame(vmem_formatted_image.unsqueeze(0), pose_to_add, K_to_add)
+                print("[DEBUG] All context frames added to VMem")
 
 
         curr_frame = n_context_frames
+        print(f"[DEBUG] Starting main generation loop. curr_frame: {curr_frame}, n_frames: {n_frames}")
         pbar = tqdm(total=n_frames, initial=curr_frame, desc="Sampling")
 
         while curr_frame < n_frames:
+            print(f"[DEBUG] Processing frame {curr_frame}/{n_frames}")
             # Determine the horizon for the current chunk
             horizon = min(n_frames - curr_frame, self.chunk_size) if self.chunk_size > 0 else n_frames - curr_frame
             assert horizon <= self.n_tokens, "Horizon exceeds the number of tokens."
+            print(f"[DEBUG] Horizon: {horizon}")
 
             # Generate scheduling matrix and initialize noise for the new chunk
+            print(f"[DEBUG] Generating scheduling matrix...")
             scheduling_matrix = self._generate_scheduling_matrix(horizon)
+            print(f"[DEBUG] Scheduling matrix generated. Shape: {scheduling_matrix.shape}")
             chunk = torch.randn((horizon, batch_size, *xs_pred.shape[2:]), device=xs_pred.device)
             chunk = torch.clamp(chunk, -self.clip_noise, self.clip_noise)
             
             # This tensor holds all generated latents so far, plus the new noisy chunk
             xs_pred_full = torch.cat([xs_pred, chunk], 0)
+            print(f"[DEBUG] xs_pred_full shape: {xs_pred_full.shape}")
 
             # Sliding window: determine the start frame for diffusion model input
             start_frame = max(0, curr_frame + horizon - self.n_tokens)
             pbar.set_postfix({"start": start_frame, "end": curr_frame + horizon})
+            print(f"[DEBUG] start_frame: {start_frame}")
 
             # --- READ FROM VMEM MEMORY ---
             random_idx = None
             if memory_condition_length:
+                print(f"[DEBUG] Memory condition length: {memory_condition_length}")
                 if self.condition_index_method.lower() == "vggt_surfel":
+                    print("[DEBUG] Using VMem for memory retrieval...")
                     # Get target poses for memory retrieval
+                    print(f"[DEBUG] Converting {horizon} target poses to VMem format...")
                     target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(horizon)]
+                    print("[DEBUG] Getting context info from VMem adapter...")
                     context_info = self.vmem_adapter.get_context_info(target_poses)
+                    print("[DEBUG] Context info retrieved from VMem")
                     
                     # Extract context indices from VMem and pad if necessary
                     if 'context_time_indices' in context_info:
+                        print("[DEBUG] Context time indices found in VMem response")
                         context_indices = context_info['context_time_indices'].cpu().numpy()
+                        print(f"[DEBUG] Context indices shape: {context_indices.shape}")
                         # Pad if not enough context is returned
                         num_retrieved = len(context_indices)
                         if num_retrieved < memory_condition_length:
+                            print(f"[DEBUG] Padding context indices from {num_retrieved} to {memory_condition_length}")
                             padding_val = context_indices[-1] if num_retrieved > 0 else 0
                             padding = np.full(memory_condition_length - num_retrieved, padding_val)
                             context_indices = np.concatenate([context_indices, padding])
                         
                         random_idx = torch.tensor(context_indices[:memory_condition_length], device='cpu').unsqueeze(1).repeat(1, batch_size)
+                        print(f"[DEBUG] Final random_idx shape: {random_idx.shape}")
                     else:
+                        print("[DEBUG] No context time indices found, using fallback")
                         # Fallback to recent frames if no context available
                         recent_indices = list(range(max(0, curr_frame - memory_condition_length), curr_frame))
                         while len(recent_indices) < memory_condition_length:
                             recent_indices.insert(0, recent_indices[0] if recent_indices else 0)
                         random_idx = torch.tensor(recent_indices[-memory_condition_length:], device='cpu').unsqueeze(1).repeat(1, batch_size)
+                        print(f"[DEBUG] Fallback random_idx shape: {random_idx.shape}")
 
                 elif self.condition_index_method.lower() == "knn":
+                    print("[DEBUG] Using KNN for condition indices")
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                 elif self.condition_index_method.lower() == "dinov3":
+                    print("[DEBUG] Using DINOv3 for condition indices")
                     random_idx = self._generate_condition_indices_knn_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
                 else :
+                    print("[DEBUG] Using MC FOV for condition indices")
                     random_idx = self._generate_condition_indices_mc_fov(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                     
                 
                 # Append retrieved memory latents for conditioning
+                print("[DEBUG] Appending memory latents for conditioning...")
                 memory_latents = xs_pred[random_idx.squeeze(1), torch.arange(batch_size)].clone()
                 xs_pred_for_diffusion = torch.cat([xs_pred_full, memory_latents], 0)
+                print(f"[DEBUG] xs_pred_for_diffusion shape after memory: {xs_pred_for_diffusion.shape}")
             else:
+                print("[DEBUG] No memory conditioning, using xs_pred_full")
                 xs_pred_for_diffusion = xs_pred_full
 
             # Prepare input conditions for the diffusion model
+            print("[DEBUG] Preparing input conditions for diffusion model...")
             input_condition, input_pose_condition, frame_idx_list = self._prepare_conditions(
                 start_frame, curr_frame, horizon, conditions, pose_conditions, c2w_mat, frame_idx, random_idx,
                 image_width=xs_raw.shape[-1], image_height=xs_raw.shape[-2]
             )
+            print("[DEBUG] Input conditions prepared")
 
             # Perform sampling for each step in the scheduling matrix
+            print(f"[DEBUG] Starting diffusion sampling. Scheduling matrix steps: {scheduling_matrix.shape[0] - 1}")
             for m in range(scheduling_matrix.shape[0] - 1):
+                print(f"[DEBUG] Diffusion step {m+1}/{scheduling_matrix.shape[0] - 1}")
                 from_noise_levels, to_noise_levels = self._prepare_noise_levels(
                     scheduling_matrix, m, curr_frame, batch_size, memory_condition_length
                 )
                 
+                print(f"[DEBUG] Calling diffusion model sample_step...")
                 xs_pred_for_diffusion[start_frame:] = self.diffusion_model.sample_step(
                     xs_pred_for_diffusion[start_frame:].to(self.device),
                     input_condition, input_pose_condition,
@@ -1167,17 +1219,23 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     current_frame=curr_frame, mode="validation",
                     reference_length=memory_condition_length, frame_idx=frame_idx_list
                 ).cpu()
+                print(f"[DEBUG] Diffusion step {m+1} completed")
 
             # Extract the newly generated (denoised) latents
+            print("[DEBUG] Extracting newly generated latents...")
             newly_generated_latents = xs_pred_for_diffusion[curr_frame : curr_frame + horizon]
+            print(f"[DEBUG] Newly generated latents shape: {newly_generated_latents.shape}")
             
             # Append the new latents to the persistent prediction tensor
             xs_pred = torch.cat([xs_pred, newly_generated_latents], 0)
+            print(f"[DEBUG] Updated xs_pred shape: {xs_pred.shape}")
 
             # --- [START] CORRECTED MEMORY UPDATE LOGIC ---
             if self.condition_index_method.lower() == "vggt_surfel":
+                print("[DEBUG] Updating VMem memory with newly generated frames...")
                 # Decode each newly generated latent and add it to the memory bank one by one
                 for i in range(horizon):
+                    print(f"[DEBUG] Processing frame {i+1}/{horizon} for VMem update...")
                     # Decode the single latent frame (processing first item in batch for VMem)
                     decoded_frame = self.decode(newly_generated_latents[i:i+1, 0:1].to(self.device)).cpu()
                     
@@ -1189,19 +1247,28 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
                     # Add the new frame content to the surfel memory
                     self.vmem_adapter.add_frame(vmem_formatted_image.unsqueeze(0), pose_to_add, K_to_add)
+                print("[DEBUG] VMem memory update completed")
             # --- [END] CORRECTED MEMORY UPDATE LOGIC ---
 
             curr_frame += horizon
             pbar.update(horizon)
+            print(f"[DEBUG] Completed frame chunk. curr_frame now: {curr_frame}")
 
         # VMem handles memory updates internally, no waiting needed
+        print("[DEBUG] Main generation loop completed")
 
         # Decode final predictions and ground truth for evaluation
+        print("[DEBUG] Decoding final predictions...")
         xs_pred_decoded = self.decode(xs_pred[n_context_frames:].to(self.device)).cpu()
+        print("[DEBUG] Decoding ground truth...")
         xs_decode = self.decode(xs[n_context_frames:].to(self.device)).cpu()
+        print(f"[DEBUG] Final predictions shape: {xs_pred_decoded.shape}")
+        print(f"[DEBUG] Ground truth shape: {xs_decode.shape}")
 
         # Store results for evaluation
+        print("[DEBUG] Storing results for evaluation...")
         self.validation_step_outputs.append((xs_pred_decoded, xs_decode, names))
+        print("[DEBUG] Validation step completed successfully")
         return
 
     @torch.no_grad()
