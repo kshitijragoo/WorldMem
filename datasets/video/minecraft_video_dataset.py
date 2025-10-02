@@ -146,10 +146,14 @@ class MinecraftVideoDataset(BaseVideoDataset):
         Returns:
             Tuple[torch.Tensor, torch.Tensor, np.ndarray, np.ndarray]: Video, actions, poses, and timestamps.
         """
+        print(f"[DEBUG] Dataset __getitem__ called with idx: {idx}")
         max_retries = 1000
         for _ in range(max_retries):
             try:
-                return self.load_data(idx)
+                print(f"[DEBUG] Calling load_data for idx: {idx}")
+                result = self.load_data(idx)
+                print(f"[DEBUG] load_data completed successfully for idx: {idx}")
+                return result
             except Exception as e:
                 print(f"Retrying due to error: {e}")
                 idx = (idx + 1) % len(self)
