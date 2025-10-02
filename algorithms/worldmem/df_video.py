@@ -433,6 +433,18 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         if self.require_pose_prediction:
             self.pose_prediction_model = PosePredictionNet()
+    
+    def on_validation_start(self):
+        """Move LPIPS model to the correct device when validation starts."""
+        super().on_validation_start()
+        if hasattr(self, 'validation_lpips_model'):
+            self.validation_lpips_model = self.validation_lpips_model.to(self.device)
+    
+    def on_test_start(self):
+        """Move LPIPS model to the correct device when test starts."""
+        super().on_test_start()
+        if hasattr(self, 'validation_lpips_model'):
+            self.validation_lpips_model = self.validation_lpips_model.to(self.device)
 
     def _generate_noise_levels(self, xs: torch.Tensor, masks = None) -> torch.Tensor:
         """
