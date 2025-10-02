@@ -20,7 +20,7 @@ python -m main +name=infer \
     +algorithm.relative_embedding=true \
     +algorithm.log_video=true \
     +algorithm.add_timestamp_embedding=true \
-    algorithm.condition_index_method=dinov3 \
+    +algorithm.condition_index_method=dinov3 \
     algorithm.metrics=[lpips,psnr] \
     +infer_script_path=infer.sh \
 
