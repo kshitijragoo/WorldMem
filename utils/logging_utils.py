@@ -137,14 +137,16 @@ def get_validation_metrics_for_videos(
         lpips_model.reset()
 
     if fid_model is not None:
-        print(f"[DEBUG] FID model device: {next(fid_model.parameters()).device}")
-        print(f"[DEBUG] Input tensors device: {observation_hat.device}")
+        print(f"[DEBUG] FID input shapes - predicted: {observation_hat.shape}, ground truth: {observation_gt.shape}")
+        print(f"[DEBUG] FID input ranges - predicted: [{observation_hat.min():.3f}, {observation_hat.max():.3f}], ground truth: [{observation_gt.min():.3f}, {observation_gt.max():.3f}]")
         
         # Ensure FID model is on the same device as input tensors
         fid_model = fid_model.to(observation_hat.device)
         
         observation_hat_uint8 = ((observation_hat + 1.0) / 2 * 255).type(torch.uint8)
         observation_gt_uint8 = ((observation_gt + 1.0) / 2 * 255).type(torch.uint8)
+        
+        print(f"[DEBUG] FID uint8 ranges - predicted: [{observation_hat_uint8.min()}, {observation_hat_uint8.max()}], ground truth: [{observation_gt_uint8.min()}, {observation_gt_uint8.max()}]")
         
         print(f"[DEBUG] Starting FID computation...")
         fid_model.update(observation_gt_uint8, real=True)
