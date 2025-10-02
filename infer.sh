@@ -21,7 +21,7 @@ python -m main +name=infer \
     +algorithm.log_video=true \
     +algorithm.add_timestamp_embedding=true \
     algorithm.condition_index_method=fov \
-    algorithm.metrics=[lpips,psnr, fid] \
+    algorithm.metrics=[lpips,psnr,fid] \
     +infer_script_path=infer.sh \
 
 # +dataset.selection_mode=random or +dataset.selection_mode=list \ +dataset.selected_videos=[w_updown_000008]
