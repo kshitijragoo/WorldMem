@@ -794,6 +794,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         Generate memory indices using a hybrid geometric and semantic retrieval strategy.
         This version uses FOV overlap for geometric filtering.
         """
+        print("Using MC for DINOv3")
         batch_size = xs_pred.shape[1]
 
         # --- Graceful Fallback for Initial Frames ---
@@ -903,11 +904,12 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         return torch.stack(final_indices_list, dim=1)
 
-    def _generate_condition_indices_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon):
+    def _generate_condition_indices_knn_dinov3(self, curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon):
         """
         Generate memory indices using a hybrid geometric and semantic retrieval strategy.
         This version is robust to batching and handles the warm-up phase correctly.
         """
+        print("Using k-NN for DINOv3")
         batch_size = xs_pred.shape[1]
 
         # --- Graceful Fallback for Initial Frames ---
@@ -1131,7 +1133,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                 elif self.condition_index_method.lower() == "dinov3":
-                    random_idx = self._generate_condition_indices_mc_dinov3(
+                    random_idx = self._generate_condition_indices_knn_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
                 else :
