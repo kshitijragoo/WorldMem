@@ -375,7 +375,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         super().__init__(cfg)
 
         # Initialize DINOv3 feature extractor if the method is selected
-        if self.condition_index_method.lower() == "dinov3":
+        if self.condition_index_method.lower() == "mc_dinov3" or self.condition_index_method.lower() == "knn_dinov3":
             print("Initializing DINOv3-based hybrid retrieval.")
             self.dino_feature_extractor = DINOv3FeatureExtractor(
                 model_id=cfg.dinov3_model_id, 
@@ -1349,7 +1349,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 print(f"First pose converted: {first_pose_converted.shape}")
                 self.vmem_adapter.initialize_with_frame(first_frame_converted, first_pose_converted)
                 print("VMem initialized with first frame")
-            elif self.condition_index_method.lower() == "dinov3":
+            elif self.condition_index_method.lower() == "mc_dinov3" or self.condition_index_method.lower() == "knn_dinov3":
                 memory_raw_frames = first_frame[None, None].cpu()
             else:
                 memory_raw_frames = None
@@ -1365,7 +1365,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         else:
             # Load existing memory from numpy arrays
             memory_latent_frames = torch.from_numpy(memory_latent_frames)
-            if self.condition_index_method.lower() == "dinov3":
+            if self.condition_index_method.lower() == "mc_dinov3" or self.condition_index_method.lower() == "knn_dinov3":
                 memory_raw_frames = torch.from_numpy(memory_raw_frames)
             else:
                 memory_raw_frames = None
@@ -1579,7 +1579,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
 
         # Update the memory banks for the next interactive step
         memory_latent_frames = xs_pred.cpu()
-        if self.condition_index_method.lower() == "dinov3":
+        if self.condition_index_method.lower() == "mc_dinov3" or self.condition_index_method.lower() == "knn_dinov3":
             if memory_raw_frames is None:
                 # This case handles if the interactive session started with DINOv3 but no raw frames
                 # We decode all generated frames to create the raw frame memory
