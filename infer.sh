@@ -20,7 +20,7 @@ python -m main +name=infer \
     +algorithm.relative_embedding=true \
     +algorithm.log_video=true \
     +algorithm.add_timestamp_embedding=true \
-    algorithm.condition_index_method=fov \
+    algorithm.condition_index_method=vggt_surfels \
     algorithm.metrics=[lpips,psnr,fid] \
     +infer_script_path=infer.sh \
 
