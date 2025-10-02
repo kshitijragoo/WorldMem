@@ -367,7 +367,7 @@ class WorldMemMinecraft(DiffusionForcingBase):
         self.require_pose_prediction = getattr(cfg, "require_pose_prediction", False)
         # New parameter to select retrieval method
         #self.condition_index_method = getattr(cfg, "condition_index_method", "fov")
-        self.condition_index_method = getattr(cfg, "condition_index_method", "dinov3")
+        self.condition_index_method = getattr(cfg, "condition_index_method", "mc_dinov3")
 
         #print the condition index method
         print(f"Condition index method: {self.condition_index_method}")
@@ -1217,9 +1217,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
-                elif self.condition_index_method.lower() == "dinov3":
+                elif self.condition_index_method.lower() == "knn_dinov3":
                     print("[DEBUG] Using DINOv3 for condition indices")
                     random_idx = self._generate_condition_indices_knn_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
+                    )
+                elif self.condition_index_method.lower() == "mc_dinov3":
+                    print("[DEBUG] Using DINOv3 for condition indices")
+                    random_idx = self._generate_condition_indices_mc_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
                 else :
@@ -1490,10 +1495,15 @@ class WorldMemMinecraft(DiffusionForcingBase):
                     random_idx = self._generate_condition_indices_knn(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
-                elif self.condition_index_method.lower() == "dinov3":
+                elif self.condition_index_method.lower() == "knn_dinov3":
                     print("Using dinov3 for condition index")
                     random_idx = self._generate_condition_indices_mc_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
+                    )
+                elif self.condition_index_method.lower() == "mc_dinov3":
+                    print("[DEBUG] Using DINOv3 for condition indices")
+                    random_idx = self._generate_condition_indices_mc_dinov3(
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
                     )
                 else :
                     print("Using mc_fov for condition index")
