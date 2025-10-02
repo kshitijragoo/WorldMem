@@ -1177,37 +1177,40 @@ class WorldMemMinecraft(DiffusionForcingBase):
             if memory_condition_length:
                 print(f"[DEBUG] Memory condition length: {memory_condition_length}")
                 if self.condition_index_method.lower() == "vggt_surfel":
-                    print("[DEBUG] Using VMem for memory retrieval...")
-                    # Get target poses for memory retrieval
-                    print(f"[DEBUG] Converting {horizon} target poses to VMem format...")
-                    target_poses = [convert_worldmem_pose_to_vmem(c2w_mat[curr_frame + i, 0]) for i in range(horizon)]
-                    print("[DEBUG] Getting context info from VMem adapter...")
-                    context_info = self.vmem_adapter.get_context_info(target_poses)
+                    print("[DEBUG] Using VMem for memory retrieval (validation, interactive-like)...")
+                    # Mirror interactive: query with single current-frame pose
+                    target_pose = convert_worldmem_pose_to_vmem(c2w_mat[curr_frame, 0])
+                    print("[DEBUG] Getting context info from VMem adapter for single pose...")
+                    context_info = self.vmem_adapter.get_context_info([target_pose])
                     print("[DEBUG] Context info retrieved from VMem")
-                    
-                    # Extract context indices from VMem and pad if necessary
-                    if 'context_time_indices' in context_info:
-                        print("[DEBUG] Context time indices found in VMem response")
-                        context_indices = context_info['context_time_indices'].cpu().numpy()
-                        print(f"[DEBUG] Context indices shape: {context_indices.shape}")
-                        # Pad if not enough context is returned
-                        num_retrieved = len(context_indices)
-                        if num_retrieved < memory_condition_length:
-                            print(f"[DEBUG] Padding context indices from {num_retrieved} to {memory_condition_length}")
-                            padding_val = context_indices[-1] if num_retrieved > 0 else 0
-                            padding = np.full(memory_condition_length - num_retrieved, padding_val)
-                            context_indices = np.concatenate([context_indices, padding])
-                        
-                        random_idx = torch.tensor(context_indices[:memory_condition_length], device='cpu').unsqueeze(1).repeat(1, batch_size)
-                        print(f"[DEBUG] Final random_idx shape: {random_idx.shape}")
-                    else:
-                        print("[DEBUG] No context time indices found, using fallback")
-                        # Fallback to recent frames if no context available
+
+                    # Extract indices; if empty or missing, fallback to recent frames
+                    context_indices = None
+                    if isinstance(context_info, dict) and ('context_time_indices' in context_info):
+                        ctx = context_info['context_time_indices']
+                        if torch.is_tensor(ctx):
+                            if ctx.numel() > 0:
+                                context_indices = ctx.detach().cpu().numpy()
+                        elif isinstance(ctx, (list, tuple)):
+                            if len(ctx) > 0:
+                                context_indices = np.array(list(ctx), dtype=int)
+
+                    if context_indices is None:
+                        print("[DEBUG] No context indices from VMem, falling back to recent frames")
                         recent_indices = list(range(max(0, curr_frame - memory_condition_length), curr_frame))
                         while len(recent_indices) < memory_condition_length:
                             recent_indices.insert(0, recent_indices[0] if recent_indices else 0)
-                        random_idx = torch.tensor(recent_indices[-memory_condition_length:], device='cpu').unsqueeze(1).repeat(1, batch_size)
-                        print(f"[DEBUG] Fallback random_idx shape: {random_idx.shape}")
+                        context_indices = np.array(recent_indices[-memory_condition_length:], dtype=int)
+
+                    # Pad/truncate to fit memory_condition_length and expand across batch
+                    if len(context_indices) < memory_condition_length:
+                        pad_val = context_indices[-1] if len(context_indices) > 0 else 0
+                        pad = np.full(memory_condition_length - len(context_indices), pad_val, dtype=int)
+                        context_indices = np.concatenate([context_indices, pad])
+                    context_indices = context_indices[:memory_condition_length]
+
+                    random_idx = torch.tensor(context_indices, device='cpu').unsqueeze(1).repeat(1, batch_size)
+                    print(f"[DEBUG] Final random_idx (VMem/interactive-like) shape: {random_idx.shape}")
 
                 elif self.condition_index_method.lower() == "knn":
                     print("[DEBUG] Using KNN for condition indices")
