@@ -286,27 +286,21 @@ class BaseLightningExperiment(BaseExperiment):
             return None
 
     def _build_validation_loader(self) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
-        print("[DEBUG] Building validation dataset...")
         validation_dataset = self._build_dataset("validation")
-        print(f"[DEBUG] Validation dataset built: {validation_dataset is not None}")
         shuffle = (
             False
             if isinstance(validation_dataset, torch.utils.data.IterableDataset)
             else self.cfg.validation.data.shuffle
         )
         if validation_dataset:
-            print("[DEBUG] Creating validation DataLoader...")
-            dataloader = torch.utils.data.DataLoader(
+            return torch.utils.data.DataLoader(
                 validation_dataset,
                 batch_size=self.cfg.validation.batch_size,
                 num_workers=min(os.cpu_count(), self.cfg.validation.data.num_workers),
                 shuffle=shuffle,
                 persistent_workers=True,
             )
-            print("[DEBUG] Validation DataLoader created successfully")
-            return dataloader
         else:
-            print("[DEBUG] No validation dataset, returning None")
             return None
 
     def _build_test_loader(self) -> Optional[Union[TRAIN_DATALOADERS, pl.LightningDataModule]]:
@@ -413,18 +407,12 @@ class BaseLightningExperiment(BaseExperiment):
         """
         All validation happens here
         """
-        print("[DEBUG] Starting validation method...")
         if not self.algo:
-            print("[DEBUG] Building algorithm...")
             self.algo = self._build_algo()
-            print("[DEBUG] Algorithm built successfully")
         if self.cfg.validation.compile:
-            print("[DEBUG] Compiling algorithm...")
             self.algo = torch.compile(self.algo)
-            print("[DEBUG] Algorithm compiled successfully")
 
         callbacks = []
-        print("[DEBUG] Creating trainer...")
 
         trainer = pl.Trainer(
             accelerator="auto",
@@ -438,20 +426,15 @@ class BaseLightningExperiment(BaseExperiment):
             detect_anomaly=False,  # self.cfg.debug,
             inference_mode=self.cfg.validation.inference_mode,
         )
-        print("[DEBUG] Trainer created successfully")
 
         if self.customized_load:
-            print("[DEBUG] Loading custom checkpoints...")
             if self.seperate_load:
-                print("[DEBUG] Loading separate checkpoints...")
                 load_custom_checkpoint(algo=self.algo.diffusion_model,checkpoint_path=self.diffusion_model_path)
                 load_custom_checkpoint(algo=self.algo.vae,checkpoint_path=self.vae_path)
             else:
-                print("[DEBUG] Loading single checkpoint...")
                 load_custom_checkpoint(algo=self.algo,checkpoint_path=self.ckpt_path)
 
             if self.zero_init_gate:
-                print("[DEBUG] Applying zero init gate...")
                 for name, para in self.algo.diffusion_model.named_parameters():
                     if 'r_adaLN_modulation' in name:
                         para.requires_grad_(False)
@@ -460,13 +443,9 @@ class BaseLightningExperiment(BaseExperiment):
                         para.requires_grad_(True)
             
             self._log_infer_script()
-            print("[DEBUG] Building validation loader...")
-            val_loader = self._build_validation_loader()
-            print("[DEBUG] Validation loader built successfully")
-            print("[DEBUG] Starting trainer.validate()...")
             trainer.validate(
                 self.algo,
-                dataloaders=val_loader,
+                dataloaders=self._build_validation_loader(),
                 ckpt_path=None,
             )
         else:
@@ -514,13 +493,7 @@ class BaseLightningExperiment(BaseExperiment):
             self.algo = torch.compile(self.algo)
 
     def _build_dataset(self, split: str) -> Optional[torch.utils.data.Dataset]:
-        print(f"[DEBUG] Building dataset for split: {split}")
         if split in ["training", "test", "validation"]:
-            dataset_name = self.root_cfg.dataset._name
-            print(f"[DEBUG] Dataset name: {dataset_name}")
-            print(f"[DEBUG] Compatible datasets: {list(self.compatible_datasets.keys())}")
-            dataset = self.compatible_datasets[dataset_name](self.root_cfg.dataset, split=split)
-            print(f"[DEBUG] Dataset built successfully for split: {split}")
-            return dataset
+            return self.compatible_datasets[self.root_cfg.dataset._name](self.root_cfg.dataset, split=split)
         else:
             raise NotImplementedError(f"split '{split}' is not implemented")

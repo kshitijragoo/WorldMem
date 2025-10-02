@@ -1544,4 +1544,3 @@ class WorldMemMinecraft(DiffusionForcingBase):
                 memory_c2w.cpu().numpy(), 
                 memory_frame_idx.cpu().numpy(),
                 memory_raw_frames.cpu().numpy() if memory_raw_frames is not None else None)
-
