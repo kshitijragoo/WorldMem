@@ -1503,14 +1503,14 @@ class WorldMemMinecraft(DiffusionForcingBase):
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, horizon
                     )
                 elif self.condition_index_method.lower() == "knn_dinov3":
-                    print("Using dinov3 for condition index")
-                    random_idx = self._generate_condition_indices_mc_dinov3(
+                    print("Using knn_dinov3 for condition index")
+                    random_idx = self._generate_condition_indices_knn_dinov3(
                         curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
                     )
                 elif self.condition_index_method.lower() == "mc_dinov3":
                     print("[DEBUG] Using DINOv3 for condition indices")
                     random_idx = self._generate_condition_indices_mc_dinov3(
-                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, xs_raw, horizon
+                        curr_frame, memory_condition_length, xs_pred, pose_conditions, frame_idx, memory_raw_frames, next_horizon
                     )
                 else :
                     print("Using mc_fov for condition index")
