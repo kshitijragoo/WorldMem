@@ -729,16 +729,19 @@ elif TEST2_MODE:
     if method is None:
         method = "fov"
     method = method.lower()
-    if method.startswith("mc_"):
-        method = method[3:]
-    if method not in ["fov", "dinov3", "vggt_surfel"]:
+    # Accept only mc_dinov3, fov, vggt_surfel (map mc_dinov3 -> internal 'dinov3')
+    if method not in ["mc_dinov3", "fov", "vggt_surfel"]:
         print(f"[Test2] Unrecognized method '{method}', defaulting to 'fov'.")
-        method = "fov"
+        requested_method = "fov"
+    else:
+        requested_method = method
+
+    internal_method = requested_method
 
     # Reinitialize worldmem with the requested method
     try:
-        worldmem = reinitialize_worldmem_with_method(method)
-        print(f"[Test2] Using condition index method: {method}")
+        worldmem = reinitialize_worldmem_with_method(internal_method)
+        print(f"[Test2] Using condition index method: {requested_method}")
     except Exception as e:
         print(f"[Test2] Failed to reinitialize with method '{method}': {e}")
         raise
