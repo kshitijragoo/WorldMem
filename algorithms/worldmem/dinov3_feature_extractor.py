@@ -2,6 +2,7 @@
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Dict
 from transformers import AutoModel
 
@@ -64,14 +65,21 @@ class DINOv3FeatureExtractor:
             image_batch = image_batch.to(self.device)
 
         with torch.inference_mode():
-            # The model's forward pass returns a dictionary of feature types
-            features_dict = self.model.forward_features(image_batch)
-            
-            # We are interested in the final, normalized patch tokens
-            patch_features = features_dict.get('x_norm_patchtokens')
-            
-            if patch_features is None:
-                raise KeyError("Could not find 'x_norm_patchtokens' in model output. "
-                               "Available keys: " + str(features_dict.keys()))
+            # Hugging Face DINOv3 models return a BaseModelOutput with last_hidden_state
+            # Shape: [batch_size, num_tokens (1 + num_patches), hidden_dim]
+            outputs = self.model(image_batch)
+            if not hasattr(outputs, 'last_hidden_state'):
+                raise AttributeError("Model output does not have 'last_hidden_state'.")
+
+            token_embeddings = outputs.last_hidden_state
+            if token_embeddings.dim() != 3 or token_embeddings.size(1) < 2:
+                raise ValueError("Unexpected DINOv3 output shape: "
+                                 f"{tuple(token_embeddings.shape)}")
+
+            # Exclude class token at index 0 to keep only patch tokens
+            patch_features = token_embeddings[:, 1:, :]
+
+            # Optionally L2-normalize patch features to match common DINO usage
+            patch_features = F.normalize(patch_features, dim=-1)
                                
         return patch_features
