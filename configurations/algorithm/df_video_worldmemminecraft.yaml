@@ -13,6 +13,9 @@ action_cond_dim: 25
 use_plucker: true
 
 
+condition_index_method: fov  # Default method, can be overridden
+
+
 diffusion:
   # training
   beta_schedule: sigmoid
