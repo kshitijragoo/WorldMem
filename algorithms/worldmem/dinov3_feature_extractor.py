@@ -43,6 +43,16 @@ class DINOv3FeatureExtractor:
             print(f"Error loading DINOv3 model from Hugging Face: {e}")
             return None
 
+    def set_device(self, device: str) -> None:
+        """
+        Move the internal model and update device to keep parity with the LightningModule.
+        """
+        if device == self.device:
+            return
+        self.device = device
+        if self.model is not None:
+            self.model.to(self.device)
+
     def extract_patch_features(self, image_batch: torch.Tensor) -> torch.Tensor:
         """
         Extracts dense patch features from a batch of images.

@@ -377,9 +377,11 @@ class WorldMemMinecraft(DiffusionForcingBase):
         # Initialize DINOv3 feature extractor if the method is selected
         if self.condition_index_method.lower() == "mc_dinov3" or self.condition_index_method.lower() == "knn_dinov3":
             print("Initializing DINOv3-based hybrid retrieval.")
+            if not torch.cuda.is_available():
+                raise RuntimeError("CUDA is required: force-setting DINOv3 feature extractor to CUDA but no GPU is available.")
             self.dino_feature_extractor = DINOv3FeatureExtractor(
-                model_id=cfg.dinov3_model_id, 
-                device=self.device
+                model_id=cfg.dinov3_model_id,
+                device="cuda"
             )
             self.memory_candidate_pool_size = 64  # Hyperparameter N
             self.w_geom = 0.4  # Hyperparameter for geometric score weight
@@ -1094,6 +1096,9 @@ class WorldMemMinecraft(DiffusionForcingBase):
             None: Appends the predicted and ground truth frames to `self.validation_step_outputs`.
         """
         print(f"[DEBUG] Starting validation step {batch_idx}")
+        # Keep auxiliary modules on the same device as the LightningModule
+        if hasattr(self, "dino_feature_extractor") and self.dino_feature_extractor is not None:
+            self.dino_feature_extractor.set_device("cuda")
         # Preprocess the input batch
         memory_condition_length = self.memory_condition_length
         print(f"[DEBUG] Preprocessing batch...")
